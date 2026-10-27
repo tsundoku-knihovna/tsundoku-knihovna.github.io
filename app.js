@@ -41,6 +41,7 @@ const I = {
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const initials = (n) => (n || '?').split(/\s+/).map((w) => w[0]).slice(0, 2).join('').toUpperCase();
+const avHtml = (p, cls = '') => (p && /^https:\/\//.test(p.avatar_url || '') ? `<div class="av img ${cls}"><img src="${esc(p.avatar_url)}" alt=""></div>` : `<div class="av ${cls}">${esc(initials(p?.display_name))}</div>`);
 const starsTxt = (r) => (r ? '★'.repeat(r) + '☆'.repeat(5 - r) : '');
 const COVER_COLORS = ['#2F4A3A', '#8C3B2E', '#C9A24A', '#5C6B73', '#A6705A', '#3E5C76', '#6B5B4B'];
 const coverColor = (t) => COVER_COLORS[[...(t || '')].reduce((a, c) => a + c.charCodeAt(0), 0) % COVER_COLORS.length];
@@ -129,6 +130,10 @@ async function loadProfile() {
   const { data } = await sb.from('profiles').select('*').eq('id', S.session.user.id).maybeSingle();
   S.profile = data;
 }
+async function loadFavs() {
+  const { data } = await sb.from('profile_favs').select('favs').eq('user_id', S.session.user.id).maybeSingle();
+  S.favs = data?.favs || {};
+}
 async function loadBooks() {
   const { data, error } = await sb.from('books').select('*').eq('owner_id', S.session.user.id).order('created_at', { ascending: false });
   if (!error) S.books = data;
@@ -138,7 +143,7 @@ async function loadFriends() {
   S.friendships = data || [];
   const ids = [...new Set(S.friendships.flatMap((f) => [f.requester_id, f.addressee_id]))];
   if (ids.length) {
-    const { data: ps } = await sb.from('profiles').select('id,username,display_name').in('id', ids);
+    const { data: ps } = await sb.from('profiles').select('id,username,display_name,avatar_url').in('id', ids);
     (ps || []).forEach((p) => (S.profilesById[p.id] = p));
   }
 }
@@ -473,8 +478,8 @@ function renderProfileSetup() {
 /* ---------- Shell ---------- */
 function nav() {
   const n = incoming().length + incomingLoans().length;
-  const b = (v, icon, label) => `<button class="${S.view === v ? 'on' : ''}" data-v="${v}">${icon}${label}${v === 'friends' && n ? `<span class="badge">${n}</span>` : ''}</button>`;
-  return `<nav class="nav"><div class="nav-in">${b(S.view === 'year' ? 'year' : 'library', I.books, 'Knihovna')}${b('wishlist', I.heart, 'Wishlist')}${b('add', I.scan, 'Přidat')}${b('friends', I.users, 'Přátelé')}</div></nav>`;
+  const b = (v, icon, label) => `<button class="${S.view === v || (v === 'library' && ['year', 'profile'].includes(S.view)) ? 'on' : ''}" data-v="${v}">${icon}${label}${v === 'friends' && n ? `<span class="badge">${n}</span>` : ''}</button>`;
+  return `<nav class="nav"><div class="nav-in">${b('library', I.books, 'Knihovna')}${b('wishlist', I.heart, 'Wishlist')}${b('add', I.scan, 'Přidat')}${b('friends', I.users, 'Přátelé')}</div></nav>`;
 }
 function render() {
   stopScanner();
@@ -484,10 +489,61 @@ function render() {
   else if (S.view === 'wishlist') body = viewWishlist();
   else if (S.view === 'add') body = viewAdd();
   else if (S.view === 'friends') body = S.friend ? viewFriend() : viewFriends();
+  else if (S.view === 'profile') body = viewProfile();
   $app.innerHTML = `<div class="wrap">${body}</div>${nav()}`;
-  $app.querySelectorAll('.nav button').forEach((b) => (b.onclick = () => { S.view = b.dataset.v; S.friend = null; if (S.view === 'add') S.defaultList = 'library'; render(); window.scrollTo(0, 0); }));
+  $app.querySelectorAll('.nav button').forEach((b) => (b.onclick = () => {
+    const v = b.dataset.v;
+    // Knihovna (and Wishlist) always go "home": no search, no filters.
+    if (v === 'library') UI.library = { q: '', filter: 'all', genre: '', format: 'all', lang: '' };
+    if (v === 'wishlist') UI.wishlist = { q: '', filter: 'all', genre: '', format: 'all', lang: '' };
+    S.view = v; S.friend = null; if (v === 'add') S.defaultList = 'library';
+    render(); window.scrollTo(0, 0);
+  }));
   bindView();
+  syncHistory();
 }
+
+/* ---------- Back button: every screen and sheet is a step in the browser history ---------- */
+const navState = () => ({ v: S.view, f: S.view === 'friends' ? S.friend?.id || null : null, t: S.friendTab || 'library', y: S.statYear || null });
+const sameNav = (a, b) => !!a && !!b && a.v === b.v && (a.f || null) === (b.f || null) && (!a.f || a.t === b.t) && (a.v !== 'year' || a.y === b.y);
+let ignorePop = 0, backTimer = null, sheetCur = null, sheetStack = [], pendingClose = null;
+function syncHistory() {
+  const st = navState(), h = history.state;
+  if (h && h.d != null && h.sheet) {
+    // The screen changed from inside a sheet (e.g. tapping a genre): reuse the sheet's history entry.
+    if (!sameNav(h, st)) {
+      history.replaceState({ ...st, d: h.d, sheet: sheetCur ? 1 : 0 }, '');
+      if (!sheetCur) { clearTimeout(backTimer); sheetStack = []; pendingClose = null; }
+    }
+    return;
+  }
+  if (!h || h.d == null) return history.replaceState({ ...st, d: 0 }, '');
+  if (!sameNav(h, st)) history.pushState({ ...st, d: h.d + 1 }, '');
+}
+// In-app "‹" buttons behave like the phone's back button when there is somewhere to go back to.
+const goBack = (fallback) => ((history.state?.d || 0) > 0 ? history.back() : fallback());
+async function restoreNav(st) {
+  st = st || { v: 'library' };
+  S.view = st.v || 'library';
+  if (st.y) S.statYear = st.y;
+  if (S.view === 'friends' && st.f && S.profilesById[st.f]) {
+    if (S.friend?.id !== st.f) return openFriend(st.f, st.t);
+    S.friendTab = st.t || 'library';
+  } else S.friend = null;
+  render(); window.scrollTo(0, 0);
+}
+window.addEventListener('popstate', (e) => {
+  if (ignorePop > 0) { ignorePop--; return; }
+  if (sheetCur) {
+    const prev = sheetStack.pop();
+    sheetCur.finish();
+    if (prev) return prev();
+    if (!sameNav(e.state, navState())) restoreNav(e.state);
+    return;
+  }
+  if (e.state?.sheet) history.replaceState({ ...e.state, sheet: 0 }, '');
+  restoreNav(e.state);
+});
 
 /* ---------- Book lists: search, filters, sorting, grid/list ---------- */
 const PREFS_KEY = 'tsundoku_prefs';
@@ -495,7 +551,7 @@ const prefs = (() => { try { return { layout: 'grid', sort: 'added', ...JSON.par
 const savePrefs = () => { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (e) {} };
 // Per-screen state: search text, status filter, genre.
 const UI = { library: { q: '', filter: 'all', genre: '', format: 'all', lang: '' }, wishlist: { q: '', filter: 'all', genre: '', format: 'all', lang: '' }, friend: { q: '', filter: 'all', genre: '', format: 'all', lang: '' } };
-const filtersFor = (audio) => [['all', 'Vše'], ['read', audio ? 'Poslechnuto' : 'Přečteno'], ['reading', audio ? 'Poslouchám' : 'Čtu'], ['unread', audio ? 'Neposlechnuto' : 'Nepřečteno'], ['paused', 'Odloženo'], ['loaned', 'Půjčené']];
+const filtersFor = (audio) => [['all', 'Vše'], ['read', audio ? 'Poslechnuto' : 'Přečteno'], ['reading', audio ? 'Poslouchám' : 'Čtu'], ['unread', audio ? 'Neposlechnuto' : 'Nepřečteno'], ['paused', 'Odloženo'], ['loaned', 'Půjčené'], ['notowned', 'Nemám doma']];
 const SORTS = [['added', 'Nejnovější'], ['title', 'Název A–Z'], ['author', 'Autor A–Z']];
 // Surname of the FIRST author, ignoring notes in brackets, co-authors, translators and "& kol.".
 function surnameOf(a) {
@@ -518,16 +574,24 @@ const matchQ = (b, q) => {
 };
 function applyUI(books, key) {
   const u = UI[key];
-  return sortBooks(books.filter((b) => {
+  const res = sortBooks(books.filter((b) => {
     if (!u.q && u.format && u.format !== 'all' && (b.format || 'book') !== u.format) return false;
-    if (u.filter === 'loaned') { if (!b.loan_type) return false; }
-    else if (u.filter !== 'all' && b.status !== u.filter) return false;
+    if (u.filter === 'loaned') { if (!b.loan_type || b.loan_type === 'returned') return false; }
+    else if (u.filter === 'notowned') { if (b.loan_type !== 'returned') return false; }
+    else {
+      if (u.filter !== 'all' && b.status !== u.filter) return false;
+      // Books she only borrowed and gave back are not on her shelf: shown only when searching or with "Nemám doma".
+      if (!u.q && b.loan_type === 'returned') return false;
+    }
     if (u.genre && !(b.tags || []).includes(u.genre)) return false;
     if (u.lang && (b.language || 'cs') !== u.lang) return false;
     return matchQ(b, u.q);
   }), prefs.sort);
+  // Wishlist: "Nejvíc chci" first (sort is stable, so the chosen order stays within both groups).
+  if (key === 'wishlist' || (key === 'friend' && S.friendTab === 'wishlist')) res.sort((a, b) => (b.wish_top ? 1 : 0) - (a.wish_top ? 1 : 0));
+  return res;
 }
-const loanText = (b) => (b.loan_type === 'lent' ? `Půjčeno${b.loan_person ? ': ' + b.loan_person : ''}` : b.loan_type === 'borrowed' ? `Vypůjčeno${b.loan_person ? ' od: ' + b.loan_person : ''}` : '');
+const loanText = (b) => (b.loan_type === 'lent' ? `Půjčeno${b.loan_person ? ': ' + b.loan_person : ''}` : b.loan_type === 'borrowed' ? `Vypůjčeno${b.loan_person ? ' od: ' + b.loan_person : ''}` : b.loan_type === 'returned' ? `Nemám doma${b.loan_person ? ' · půjčila ' + b.loan_person : ''}` : '');
 function booksHtml(list, own = true) {
   if (prefs.layout === 'list') {
     const swipeable = (b) => own && b.list === 'library';
@@ -538,14 +602,14 @@ function booksHtml(list, own = true) {
       <div class="grow"><b>${esc(b.title)}</b><span>${esc([b.author, b.year].filter(Boolean).join(' · '))}</span>
         <div class="meta">${b.rating ? `<span class="stars">${starsTxt(b.rating)}</span>` : ''}${b.language && b.language !== 'cs' ? `<span class="lang">${b.language.toUpperCase()}</span>` : ''}
           ${b.list === 'library' ? `<span class="pill sm st-${b.status}">${statusLabel(b)}</span>` : ''}
-          ${b.loan_type ? `<span class="pill sm wine">${esc(loanText(b))}</span>` : ''}${b._res ? `<span class="pill sm wine">${b._res === 'me' ? 'Zamluvila jsi' : 'Zamluveno'}</span>` : ''}
+          ${b.list === 'wishlist' && b.wish_top ? '<span class="pill sm gold">★ Nejvíc chci</span>' : ''}${b.loan_type ? `<span class="pill sm wine">${esc(loanText(b))}</span>` : ''}${b._res ? `<span class="pill sm wine">${b._res === 'me' ? 'Zamluvila jsi' : 'Zamluveno'}</span>` : ''}
           ${(b.tags || []).slice(0, 3).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div></div></button>${swipeable(b) ? '</div>' : ''}`).join('')}</div>
       ${list.some(swipeable) && !hintSeen() ? '<p class="hint" style="text-align:center">Tip: posuň knihu prstem doleva a rychle ji označíš jako Čtu nebo Přečteno.</p>' : ''}`;
   }
   return `<div class="grid">${list.map((b) => `<button class="book" data-id="${b.id}" data-own="${own ? 1 : 0}">
     ${coverHtml(b)}<div class="t">${b.language && b.language !== 'cs' ? `<span class="lang">${b.language.toUpperCase()}</span> ` : ''}${esc(b.title)}</div><div class="a">${esc(b.author || '')}</div>
     ${b.rating ? `<div class="stars">${starsTxt(b.rating)}</div>` : ''}
-    ${b.loan_type ? `<div class="loan">${esc(loanText(b))}</div>` : ''}${b._res ? `<div class="loan">${b._res === 'me' ? 'Zamluvila jsi' : 'Zamluveno'}</div>` : ''}</button>`).join('')}</div>`;
+    ${b.list === 'wishlist' && b.wish_top ? '<div class="wtop">★ Nejvíc chci</div>' : ''}${b.loan_type ? `<div class="loan">${esc(loanText(b))}</div>` : ''}${b._res ? `<div class="loan">${b._res === 'me' ? 'Zamluvila jsi' : 'Zamluveno'}</div>` : ''}</button>`).join('')}</div>`;
 }
 // Search box with clear button + status chips + sort / genre / layout toolbar.
 // Compact controls: search + "Filtry" button; only ACTIVE filters are shown as removable chips.
@@ -571,7 +635,7 @@ function openFilters(key) {
   const u = UI[key];
   const booksAll = listSource(key);
   const { el, close } = sheet(`${head('Filtry a řazení')}<div id="flt"></div>
-    <button class="btn primary" id="fdone" style="margin-top:16px">Hotovo</button>`);
+    <button class="btn primary" id="fdone" style="margin-top:16px">Hotovo</button>`, null, () => openFilters(key));
   const box = el.querySelector('#flt');
   const draw = () => {
     const nF = { book: 0, ebook: 0, audio: 0 };
@@ -613,7 +677,8 @@ function updateResults(key) {
   const box = document.getElementById('results-' + key);
   if (!box) return;
   const u = UI[key];
-  const all = listSource(key).filter((b) => u.q || !u.format || u.format === 'all' || (b.format || 'book') === u.format);
+  const all = listSource(key).filter((b) => u.q || !u.format || u.format === 'all' || (b.format || 'book') === u.format)
+    .filter((b) => u.q || u.filter === 'notowned' || b.loan_type !== 'returned');
   const list = applyUI(all, key);
   const filtered = list.length !== all.length;
   const across = u.q && u.format !== 'all' && listSource(key).some((b) => (b.format || 'book') !== u.format);
@@ -735,15 +800,16 @@ function askRating(b, key) {
 
 function viewLibrary() {
   const lib = S.books.filter((b) => b.list === 'library');
+  const home = lib.filter((b) => b.loan_type !== 'returned').length;
   const year = new Date().getFullYear();
   const readYear = readIn(year).length;
   const loaned = lib.filter((b) => b.loan_type).length;
   const nA = lib.filter(isAudio).length, nE = lib.filter(isEbook).length, nB = lib.length - nA - nE;
   const goal = S.goals?.[year];
   return `<div class="top"><div><button class="h1btn" id="about" aria-label="Co znamená tsundoku"><h1>Tsundoku</h1><span class="jp">積ん読</span></button>
-      <p class="sub">${lib.length} ${plural(lib.length, 'kniha', 'knihy', 'knih')} · <button class="link-sub" id="yearcard">letos ${readYear}${goal ? ` z ${goal}` : ' dočteno'}</button></p></div>
+      <p class="sub">${home} ${plural(home, 'kniha', 'knihy', 'knih')} · <button class="link-sub" id="yearcard">letos ${readYear}${goal ? ` z ${goal}` : ' dočteno'}</button></p></div>
     <div class="top-icons">${lib.length ? `<button class="icon-btn" id="pick" aria-label="Co číst dál?" title="Co číst dál?">${I.dice}</button><button class="icon-btn" id="yearbtn" aria-label="Čtenářský rok" title="Čtenářský rok">${I.chart}</button>` : ''}
-      <button class="icon-btn" id="me" aria-label="Můj účet">${I.user}</button></div></div>
+      <button class="icon-btn me-btn" id="me" aria-label="Můj profil">${/^https:\/\//.test(S.profile.avatar_url || '') ? `<img src="${esc(S.profile.avatar_url)}" alt="">` : I.user}</button></div></div>
     ${missingBanner() || tagBanner() || seriesBanner()}
     ${lib.length ? controlsHtml('library', lib, { placeholder: 'Hledat název, autora, žánr…' })
     : `<div class="empty"><h3>Začni plnit knihovnu</h3><p>Naskenuj čárový kód na zadní straně knihy nebo vyfoť obálku.</p><br><button class="btn primary" data-go="add">${I.scan}Přidat první knihu</button></div>`}`;
@@ -789,7 +855,7 @@ function viewFriends() {
   const inc = incoming();
   const out = S.friendships.filter((f) => f.status === 'pending' && f.requester_id === me());
   const fr = acceptedFriends();
-  const row = (p, right) => `<div class="li"><div class="av">${esc(initials(p.display_name))}</div><div class="grow"><b>${esc(p.display_name)}</b><span>@${esc(p.username)}</span></div>${right}</div>`;
+  const row = (p, right) => `<div class="li">${avHtml(p)}<div class="grow"><b>${esc(p.display_name)}</b><span>@${esc(p.username)}</span></div>${right}</div>`;
   return `<div class="top"><div><h1>Přátelé</h1><p class="sub">Tvoje jméno: <b>@${esc(S.profile.username)}</b></p></div></div>
     <button class="btn wine" id="invite">${I.share}Pozvat kamarádku</button>
     <form id="addf" style="margin-top:14px" novalidate><label class="f" for="fu">Přidat podle uživatelského jména</label>
@@ -798,7 +864,7 @@ function viewFriends() {
     ${inc.length ? `<h2>Žádosti o přátelství</h2><div class="list">${inc.map((f) => { const p = S.profilesById[f.requester_id]; return p ? row(p, `<button class="mini primary" data-acc="${f.id}">Přijmout</button><button class="mini" data-del="${f.id}" aria-label="Odmítnout">${'Ne'}</button>`) : ''; }).join('')}</div>` : ''}
     ${friendsExtraHtml()}
     <h2>Moji přátelé</h2>
-    ${fr.length ? `<div class="list">${fr.map((p) => `<button class="li" style="width:100%;text-align:left" data-friend="${p.id}"><div class="av">${esc(initials(p.display_name))}</div><div class="grow"><b>${esc(p.display_name)}</b><span>Zobrazit knihovnu a wishlist</span></div>${I.left.replace('<svg', '<svg style="width:18px;transform:rotate(180deg)"')}</button>`).join('')}</div>`
+    ${fr.length ? `<div class="list">${fr.map((p) => `<button class="li" style="width:100%;text-align:left" data-friend="${p.id}">${avHtml(p)}<div class="grow"><b>${esc(p.display_name)}</b><span>Zobrazit knihovnu a wishlist</span></div>${I.left.replace('<svg', '<svg style="width:18px;transform:rotate(180deg)"')}</button>`).join('')}</div>`
     : `<p class="sub">Zatím tu nikdo není. Pošli kamarádce pozvánku, nebo ji přidej podle jména.</p>`}
     ${out.length ? `<h2>Čeká na potvrzení</h2><div class="list">${out.map((f) => { const p = S.profilesById[f.addressee_id]; return p ? row(p, `<button class="mini" data-del="${f.id}">Zrušit</button>`) : ''; }).join('')}</div>` : ''}`;
 }
@@ -807,10 +873,12 @@ function viewFriend() {
   S.friendBooks.forEach((b) => (b._res = S.friendRes?.[b.id] || null));
   const all = S.friendBooks.filter((b) => b.list === S.friendTab);
   const chip = (k, l) => `<button class="chip ${S.friendTab === k ? 'on' : ''}" data-ft="${k}">${l}</button>`;
+  const hasFavs = favsAny(S.friendFavs, S.friendBooks);
+  const nHome = S.friendBooks.filter((b) => b.list === 'library' && b.loan_type !== 'returned').length;
   return `<button class="back" id="back">${I.left}Přátelé</button>
-    <div class="top"><div><h1>${esc(p.display_name)}</h1><p class="sub">@${esc(p.username)} · ${S.friendBooks.filter((b) => b.list === 'library').length} knih</p></div><div class="av">${esc(initials(p.display_name))}</div></div>
-    <div class="chips">${chip('library', 'Knihovna')}${chip('wishlist', 'Wishlist')}</div>
-    ${all.length ? controlsHtml('friend', all, { chips: false, placeholder: 'Hledat' }) : `<div class="empty">${S.friendTab === 'wishlist' ? 'Wishlist je zatím prázdný.' : 'Knihovna je zatím prázdná.'}</div>`}`;
+    <div class="top"><div><h1>${esc(p.display_name)}</h1><p class="sub">@${esc(p.username)} · ${nHome} ${plural(nHome, 'kniha', 'knihy', 'knih')}</p></div>${avHtml(p, 'lg')}</div>
+    <div class="chips">${chip('library', 'Knihovna')}${chip('wishlist', 'Wishlist')}${hasFavs ? chip('favs', 'Oblíbené') : ''}</div>
+    ${S.friendTab === 'favs' ? favsHtml(S.friendFavs || {}, S.friendBooks, false) : all.length ? controlsHtml('friend', all, { chips: false, placeholder: 'Hledat' }) : `<div class="empty">${S.friendTab === 'wishlist' ? 'Wishlist je zatím prázdný.' : 'Knihovna je zatím prázdná.'}</div>`}`;
 }
 const plural = (n, a, b, c) => (n === 1 ? a : n >= 2 && n <= 4 ? b : c);
 
@@ -826,10 +894,12 @@ function bindView() {
   const sa = document.getElementById('ser-all'); if (sa) sa.onclick = () => findSeries(S.books.filter((b) => !b.series_checked_at && !b.series_name));
   const sl = document.getElementById('series-btn'); if (sl) sl.onclick = openSeriesList;
   const ta = document.getElementById('tag-all'); if (ta) ta.onclick = () => tagMany(S.books.filter((b) => !b.tagged_at));
-  const meBtn = document.getElementById('me'); if (meBtn) meBtn.onclick = openAccount;
+  const meBtn = document.getElementById('me'); if (meBtn) meBtn.onclick = () => { S.view = 'profile'; render(); window.scrollTo(0, 0); };
   const ab = document.getElementById('about'); if (ab) ab.onclick = openAbout;
   const ea = document.getElementById('enr-all'); if (ea) ea.onclick = () => { enrichMany(S.books.filter((b) => !b.enriched_at)); render(); };
-  const back = document.getElementById('back'); if (back) back.onclick = () => { S.friend = null; render(); };
+  const back = document.getElementById('back'); if (back) back.onclick = () => goBack(() => { S.friend = null; if (S.view !== 'friends') S.view = 'library'; render(); window.scrollTo(0, 0); });
+  $app.querySelectorAll('[data-favbook]').forEach((x) => (x.onclick = () => openBook(x.dataset.favbook, x.dataset.own === '1')));
+  if (S.view === 'profile') bindProfile();
 
   if (S.view === 'add') {
     const tl = document.getElementById('to-lib'); if (tl) tl.onclick = () => { S.defaultList = 'library'; render(); };
@@ -865,7 +935,7 @@ async function addFriend(username) {
   const un = username.trim().replace(/^@/, '').toLowerCase();
   if (!un) { if (err) err.textContent = 'Zadej uživatelské jméno.'; return; }
   if (un === S.profile.username) { if (err) err.textContent = 'To jsi ty.'; return; }
-  const { data: p } = await sb.from('profiles').select('id,username,display_name').eq('username', un).maybeSingle();
+  const { data: p } = await sb.from('profiles').select('id,username,display_name,avatar_url').eq('username', un).maybeSingle();
   if (!p) { if (err) err.textContent = 'Takové jméno jsme nenašli.'; else toast('Uživatel @' + un + ' neexistuje.'); return; }
   S.profilesById[p.id] = p;
   const existing = S.friendships.find((f) => otherId(f) === p.id);
@@ -886,18 +956,44 @@ async function invite() {
   if (navigator.share) { try { await navigator.share({ title: 'Tsundoku', text, url }); } catch (e) {} }
   else { try { await navigator.clipboard.writeText(text + '\n' + url); toast('Odkaz zkopírován'); } catch (e) { toast(url); } }
 }
-async function openFriend(id) {
+async function openFriend(id, tab) {
   const { data } = await sb.from('books').select('*').eq('owner_id', id).order('created_at', { ascending: false });
-  S.friend = S.profilesById[id]; S.friendBooks = data || []; await loadFriendReservations(); S.friendTab = 'library'; UI.friend = { q: '', filter: 'all', genre: '', format: 'all', lang: '' }; render(); window.scrollTo(0, 0);
+  const { data: fv } = await sb.from('profile_favs').select('favs').eq('user_id', id).maybeSingle();
+  S.friendFavs = fv?.favs || {};
+  S.view = 'friends'; S.friend = S.profilesById[id]; S.friendBooks = data || []; await loadFriendReservations(); S.friendTab = tab || 'library'; UI.friend = { q: '', filter: 'all', genre: '', format: 'all', lang: '' }; render(); window.scrollTo(0, 0);
 }
 
 /* ---------- Sheets ---------- */
-function sheet(html, onClose) {
+// reopen: how to show this sheet again, so the next sheet opened from it gets a "‹" back to it.
+function sheet(html, onClose, reopen) {
+  if (pendingClose) { if (pendingClose.reopen) sheetStack.push(pendingClose.reopen); pendingClose = null; clearTimeout(backTimer); }
+  else if (sheetCur && sheetCur.reopen) sheetStack.push(sheetCur.reopen);
+  if (!history.state?.sheet) history.pushState({ ...navState(), d: (history.state?.d || 0) + 1, sheet: 1 }, '');
   $sheet.innerHTML = `<div class="sheet-bg"><div class="sheet" role="dialog" aria-modal="true">${html}</div></div>`;
   const bg = $sheet.querySelector('.sheet-bg');
-  const close = () => { $sheet.innerHTML = ''; document.body.style.overflow = ''; onClose && onClose(); };
+  const self = { reopen };
+  self.finish = () => { if (sheetCur !== self) return; sheetCur = null; $sheet.innerHTML = ''; document.body.style.overflow = ''; onClose && onClose(); };
+  sheetCur = self;
+  const close = () => {
+    if (sheetCur !== self) return;
+    self.finish();
+    pendingClose = { reopen };
+    clearTimeout(backTimer);
+    // If no other sheet opens right away, drop the sheet's history entry.
+    backTimer = setTimeout(() => {
+      pendingClose = null;
+      if (sheetCur) return;
+      sheetStack = [];
+      if (history.state?.sheet) { ignorePop++; history.back(); }
+    }, 350);
+  };
   bg.onclick = (e) => { if (e.target === bg) close(); };
   $sheet.querySelectorAll('[data-close]').forEach((b) => (b.onclick = close));
+  const hd = $sheet.querySelector('.sheet-head');
+  if (hd && sheetStack.length) {
+    hd.insertAdjacentHTML('afterbegin', `<button class="icon-btn sback" aria-label="Zpět">${I.left}</button>`);
+    hd.querySelector('.sback').onclick = () => { const prev = sheetStack.pop(); self.finish(); prev && prev(); };
+  }
   document.body.style.overflow = 'hidden';
   return { el: $sheet.querySelector('.sheet'), close };
 }
@@ -908,7 +1004,7 @@ async function openBook(id, own) {
   if (!b) return;
   let friendsHave = [];
   if (own && acceptedFriends().length) {
-    let q = sb.from('books').select('owner_id').neq('owner_id', me()).eq('list', 'library');
+    let q = sb.from('books').select('owner_id').neq('owner_id', me()).eq('list', 'library').or('loan_type.is.null,loan_type.neq.returned');
     q = b.isbn ? q.eq('isbn', b.isbn) : q.ilike('title', b.title);
     const { data } = await q; friendsHave = [...new Set((data || []).map((x) => x.owner_id))].map((i) => S.profilesById[i]).filter(Boolean);
   }
@@ -919,7 +1015,7 @@ async function openBook(id, own) {
     <div class="detail"><div id="dcv">${coverHtml(b)}${b.cover_is_original && safeUrl(b.cover_url) ? '<p class="cover-note">Obálka originálu</p>' : ''}</div><div><h2>${esc(b.title)}</h2><p class="sub">${esc([b.author, b.year].filter(Boolean).join(' · '))}</p>
       ${meta ? `<p class="sub" style="font-size:12px">${esc(meta)}</p>` : ''}
       ${b.rating ? `<div class="stars" style="font-size:18px">${starsTxt(b.rating)}</div>` : ''}
-      <span class="pill ${b.list === 'wishlist' ? 'wine' : 'st-' + b.status}">${b.list === 'wishlist' ? 'Wishlist' : statusLabel(b)}</span>${isAudio(b) || isEbook(b) ? `<span class="pill">${fmtOne(b.format)}</span>` : ''}
+      <span class="pill ${b.list === 'wishlist' ? 'wine' : 'st-' + b.status}">${b.list === 'wishlist' ? 'Wishlist' : statusLabel(b)}</span>${b.list === 'wishlist' && b.wish_top ? '<span class="pill gold">★ Nejvíc chci</span>' : ''}${isAudio(b) || isEbook(b) ? `<span class="pill">${fmtOne(b.format)}</span>` : ''}
       ${b.loan_type ? `<span class="pill wine">${esc(loanText(b))}</span>` : ''}
       ${finishedText(b) ? `<p class="sub" style="font-size:12px;margin-top:4px">${esc(finishedText(b))}</p>` : ''}</div></div>
     ${b.series_name ? `<button class="ser-line" id="serl">${I.books}<span>${esc(b.series_name)}${b.series_index ? ` · ${String(b.series_index).replace('.0', '').replace('.', ',')}. díl` : ''}</span></button>` : ''}
@@ -934,10 +1030,12 @@ async function openBook(id, own) {
       ${own ? `<button class="btn primary" id="ed">${I.edit}Upravit, hodnotit</button>
         <button class="btn" id="cph">${I.camera}${safeUrl(b.cover_url) ? 'Vyměnit obálku za vlastní fotku' : 'Vyfotit obálku'}</button>
         <input type="file" id="cph-in" accept="image/*" capture="environment" hidden>
-        ${b.list === 'wishlist' ? `<button class="btn" id="mv">${I.books}Mám ji, přesunout do knihovny</button>` : ''}`
-      : `${friendBookActions(b)}${iHave ? `<p class="hint" style="text-align:center">Tuhle knihu už máš.</p>` : `<button class="btn wine" id="want">${I.heart}Chci ji taky (do wishlistu)</button>`}`}
+        ${b.list === 'wishlist' ? `<button class="btn ${b.wish_top ? 'gold' : ''}" id="wtop">${b.wish_top ? '★ Nejvíc chci · zrušit' : '☆ Označit: tuhle chci nejvíc'}</button>
+        <button class="btn" id="mv">${I.books}Mám ji, přesunout do knihovny</button>` : ''}
+        ${b.loan_type === 'borrowed' ? `<button class="btn" id="ret">Vrátila jsem ji (nemám ji doma)</button>` : ''}`
+      : `${b.loan_type === 'returned' ? '' : friendBookActions(b)}${iHave ? `<p class="hint" style="text-align:center">Tuhle knihu už máš.</p>` : `<button class="btn wine" id="want">${I.heart}Chci ji taky (do wishlistu)</button>`}`}
     </div>
-    ${friendsHave.length ? `<label class="f" style="margin-top:16px">Mají ji i přátelé</label><div class="friends-have">${friendsHave.map((p) => `<span class="av sm" title="${esc(p.display_name)}">${esc(initials(p.display_name))}</span>`).join('')}</div>` : ''}`);
+    ${friendsHave.length ? `<label class="f" style="margin-top:16px">Mají ji i přátelé</label><div class="friends-have">${friendsHave.map((p) => avHtml(p, 'sm')).join('')}</div>` : ''}`, null, () => openBook(id, own));
   el.querySelectorAll('[data-tag]').forEach((t) => (t.onclick = () => {
     close();
     const key = own ? (b.list === 'wishlist' ? 'wishlist' : 'library') : 'friend';
@@ -976,7 +1074,21 @@ async function openBook(id, own) {
       b.cover_url = url; b.cover_is_original = false; close(); render(); openBook(b.id, true); toast('Obálka uložena');
     };
     const mv = el.querySelector('#mv');
-    if (mv) mv.onclick = async () => { await sb.from('books').update({ list: 'library' }).eq('id', b.id); await loadBooks(); close(); toast('Přesunuto do knihovny'); render(); };
+    const wt = el.querySelector('#wtop');
+    if (wt) wt.onclick = async () => {
+      const v = !b.wish_top;
+      const { error } = await sb.from('books').update({ wish_top: v }).eq('id', b.id);
+      if (error) return toast('Nepodařilo se uložit.');
+      b.wish_top = v; close(); render(); toast(v ? 'Označeno: nejvíc chci. Je teď nahoře.' : 'Zrušeno');
+    };
+    const rt = el.querySelector('#ret');
+    if (rt) rt.onclick = async () => {
+      const { error } = await sb.from('books').update({ loan_type: 'returned' }).eq('id', b.id);
+      if (error) return toast('Nepodařilo se uložit.');
+      b.loan_type = 'returned'; close(); render();
+      toast('Hotovo. V knihovně ji najdeš přes filtr Nemám doma, do statistik se počítá.');
+    };
+    if (mv) mv.onclick = async () => { await sb.from('books').update({ list: 'library', wish_top: false }).eq('id', b.id); await loadBooks(); close(); toast('Přesunuto do knihovny'); render(); };
   } else {
     const w = el.querySelector('#want');
     if (w) w.onclick = async () => {
@@ -1018,8 +1130,9 @@ function openEditor(data, isNew = false, photoFile = null) {
           <input class="inp" type="date" id="fdate" style="margin-top:8px" max="${todayISO()}" value="${fp === 'day' && d.finished_at ? d.finished_at : todayISO()}" ${fp === 'day' ? '' : 'hidden'}>
           <select class="sel inp" id="fyear" style="margin-top:8px" ${fp === 'year' ? '' : 'hidden'}>${Array.from({ length: new Date().getFullYear() - 1949 }, (_, i) => new Date().getFullYear() - i).map((y) => `<option ${d.finished_at && +d.finished_at.slice(0, 4) === y ? 'selected' : ''}>${y}</option>`).join('')}</select>
         </div>
-        <label class="f">Půjčování</label><div class="seg" id="ln">${[[null, 'Doma'], ['lent', 'Půjčila jsem'], ['borrowed', 'Vypůjčená']].map(([k, l]) => `<button type="button" data-k="${k || ''}" class="${(d.loan_type || '') === (k || '') ? 'on' : ''}">${l}</button>`).join('')}</div>
-        <input class="inp" id="lp" style="margin-top:8px" maxlength="100" value="${esc(d.loan_person || '')}" placeholder="${d.loan_type === 'borrowed' ? 'Od koho' : 'Komu'}" ${d.loan_type ? '' : 'hidden'}>
+        <label class="f">Půjčování</label><div class="seg seg4" id="ln">${[[null, 'Doma'], ['lent', 'Půjčila jsem'], ['borrowed', 'Vypůjčená'], ['returned', 'Vrátila jsem']].map(([k, l]) => `<button type="button" data-k="${k || ''}" class="${(d.loan_type || '') === (k || '') ? 'on' : ''}">${l}</button>`).join('')}</div>
+        <input class="inp" id="lp" style="margin-top:8px" maxlength="100" value="${esc(d.loan_person || '')}" placeholder="${d.loan_type === 'lent' ? 'Komu' : 'Od koho'}" ${d.loan_type ? '' : 'hidden'}>
+        <p class="hint" id="lnh" ${d.loan_type === 'returned' ? '' : 'hidden'}>Četla jsi půjčenou a už ji nemáš. V knihovně ji najdeš přes hledání nebo filtr Nemám doma, do statistik se počítá.</p>
       </div>
       <label class="f">Žánry</label><div class="tags-edit" id="tg"></div>
       <div class="row" style="margin-top:6px"><input class="inp" id="tgi" list="tg-list" placeholder="Přidat žánr" maxlength="40"><button type="button" class="mini" id="tga" style="padding:10px 14px">Přidat</button></div>
@@ -1067,7 +1180,7 @@ function openEditor(data, isNew = false, photoFile = null) {
   const lp = el.querySelector('#lp');
   el.querySelectorAll('#ln button').forEach((b) => (b.onclick = () => {
     d.loan_type = b.dataset.k || null; el.querySelectorAll('#ln button').forEach((x) => x.classList.toggle('on', x === b));
-    lp.hidden = !d.loan_type; lp.placeholder = d.loan_type === 'borrowed' ? 'Od koho' : 'Komu'; if (d.loan_type) lp.focus();
+    lp.hidden = !d.loan_type; lp.placeholder = d.loan_type === 'lent' ? 'Komu' : 'Od koho'; el.querySelector('#lnh').hidden = d.loan_type !== 'returned'; if (d.loan_type) lp.focus();
   }));
   const tg = el.querySelector('#tg'), tgi = el.querySelector('#tgi');
   const drawTags = () => {
@@ -1378,17 +1491,207 @@ function openSearch() {
   };
 }
 
-/* ---------- Account ---------- */
-function openAccount() {
-  const { el, close } = sheet(`${head('Můj účet')}
-    <div class="li" style="padding:0 0 16px"><div class="av">${esc(initials(S.profile.display_name))}</div><div class="grow"><b>${esc(S.profile.display_name)}</b><span>@${esc(S.profile.username)} · ${esc(S.session.user.email)}</span></div></div>
-    <div class="card" style="padding:12px 14px;margin-bottom:12px"><b class="jp-inline">積ん読 Tsundoku</b><p class="sub" style="margin-top:4px">${TSUNDOKU_DEF}</p></div>
-    <div class="stack"><button class="btn" id="exp">Stáhnout knihovnu jako CSV</button><button class="btn danger" id="lo">${I.logout}Odhlásit se</button></div>`);
-  el.querySelector('#lo').onclick = async () => { close(); await sb.auth.signOut(); };
-  el.querySelector('#exp').onclick = () => {
+/* ---------- Profile: photo, password, favourites ---------- */
+// Everything is optional; only filled-in items are shown (and only to friends).
+const FAV_DEFS = [
+  ['book', 'Nejoblíbenější kniha', 'book'],
+  ['series', 'Nejoblíbenější série', 'series'],
+  ['author', 'Nejoblíbenější autor nebo autorka', 'author'],
+  ['genre', 'Nejoblíbenější žánr', 'genre'],
+  ['reread', 'Čtu pořád dokola', 'book'],
+  ['recommend', 'Doporučuju všem', 'book'],
+  ['audio', 'Nejoblíbenější audiokniha', 'audio'],
+  ['narrator', 'Nejoblíbenější hlas audioknih', 'narrator'],
+  ['quote', 'Oblíbený citát', 'quote'],
+];
+const favsAny = (f, books) => !!f && (FAV_DEFS.some(([k]) => f[k]) || !!f.about || (f.show_reading && (books || []).some((b) => b.list === 'library' && b.status === 'reading')));
+function favBookHtml(v, books, own) {
+  const b = books.find((x) => x.id === v.id);
+  const inner = `<div class="thumb">${coverHtml(b || v)}</div><div class="grow"><b>${esc(v.title)}</b><span>${esc(v.author || '')}</span></div>`;
+  return b ? `<button class="fav-bk" data-favbook="${b.id}" data-own="${own ? 1 : 0}">${inner}</button>` : `<div class="fav-bk">${inner}</div>`;
+}
+function favsHtml(f, books, own) {
+  const out = [];
+  if (f.about) out.push(`<p class="about-me">${esc(f.about)}</p>`);
+  const reading = f.show_reading ? books.filter((b) => b.list === 'library' && b.status === 'reading') : [];
+  if (reading.length) out.push(`<div class="fav"><label>${reading.every(isAudio) ? 'Teď poslouchá' : own ? 'Teď čtu' : 'Teď čte'}</label>${reading.slice(0, 3).map((b) => favBookHtml(b, books, own)).join('')}</div>`);
+  FAV_DEFS.forEach(([k, label, type]) => {
+    const v = f[k];
+    if (!v) return;
+    if (type === 'book' || type === 'audio') { if (v.title) out.push(`<div class="fav"><label>${label}</label>${favBookHtml(v, books, own)}</div>`); }
+    else if (type === 'quote') out.push(`<div class="fav"><label>${label}</label><blockquote>„${esc(v)}“${f.quote_src ? `<cite>${esc(f.quote_src)}</cite>` : ''}</blockquote></div>`);
+    else out.push(`<div class="fav"><label>${label}</label><b class="fav-txt">${esc(v)}</b></div>`);
+  });
+  if (!out.length) return own ? `<div class="card fav-empty"><b>Ukaž přátelům, co máš ráda</b><span>Nejoblíbenější kniha, série, autor, citát… Vyplníš jen to, co chceš.</span></div>` : '';
+  return `<div class="favs">${out.join('')}</div>`;
+}
+function viewProfile() {
+  const p = S.profile;
+  const lib = S.books.filter((b) => b.list === 'library');
+  const home = lib.filter((b) => b.loan_type !== 'returned').length;
+  const read = lib.filter((b) => b.status === 'read').length;
+  const y = new Date().getFullYear();
+  return `<button class="back" id="back">${I.left}Knihovna</button>
+    <div class="prof-head">
+      <button class="prof-av" id="pav" aria-label="Změnit profilovou fotku">${avHtml(p, 'xl')}<span class="cam">${I.camera}</span></button>
+      <input type="file" id="pav-in" accept="image/*" hidden>
+      <h1>${esc(p.display_name)}</h1><p class="sub">@${esc(p.username)}</p>
+      <div class="pstats"><div><b>${home}</b><span>${plural(home, 'kniha doma', 'knihy doma', 'knih doma')}</span></div><div><b>${read}</b><span>přečteno</span></div><div><b>${readIn(y).length}</b><span>letos</span></div></div>
+    </div>
+    ${favsHtml(S.favs || {}, S.books, true)}
+    <button class="btn primary" id="pedit" style="margin-top:14px">${I.edit}Upravit profil</button>
+    <h2>Účet</h2>
+    <div class="list acts">
+      <button class="li" id="ppw">Změnit heslo</button>
+      <button class="li" id="pexp">Stáhnout knihovnu jako CSV</button>
+      <button class="li" id="pabout">Co znamená tsundoku</button>
+    </div>
+    <p class="sub" style="font-size:12px;margin-top:8px">Přihlášená jako ${esc(S.session.user.email)}</p>
+    <button class="btn danger" id="plo" style="margin-top:12px">${I.logout}Odhlásit se</button>`;
+}
+function bindProfile() {
+  const pin = document.getElementById('pav-in');
+  document.getElementById('pav').onclick = () => pin.click();
+  pin.onchange = async () => { const f = pin.files[0]; pin.value = ''; if (f) { await setAvatar(f); render(); } };
+  document.getElementById('pedit').onclick = openProfileEdit;
+  document.getElementById('ppw').onclick = openPassword;
+  document.getElementById('pabout').onclick = openAbout;
+  document.getElementById('plo').onclick = async () => { await sb.auth.signOut(); };
+  document.getElementById('pexp').onclick = () => {
     const cols = ['title', 'author', 'isbn', 'year', 'list', 'status', 'rating', 'note'];
     const csv = [cols.join(';'), ...S.books.map((b) => cols.map((c) => `"${String(b[c] ?? '').replace(/"/g, '""')}"`).join(';'))].join('\n');
-    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv' })); a.download = 'tsundoku.csv'; a.click();
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['﻿' + csv], { type: 'text/csv' })); a.download = 'tsundoku.csv'; a.click();
+  };
+}
+const avatarPath = (url) => (url || '').split('/storage/v1/object/public/avatars/')[1] || null;
+async function setAvatar(file) {
+  toast('Nahrávám fotku…');
+  let blob;
+  try { blob = await resizeImage(file, 400); } catch (e) { return toast('Fotku se nepodařilo načíst.'); }
+  const path = `${me()}/${crypto.randomUUID()}.jpg`;
+  const { error } = await sb.storage.from('avatars').upload(path, blob, { contentType: 'image/jpeg' });
+  if (error) return toast('Fotku se nepodařilo nahrát.');
+  const url = sb.storage.from('avatars').getPublicUrl(path).data.publicUrl;
+  const old = avatarPath(S.profile.avatar_url);
+  const { error: e2 } = await sb.from('profiles').update({ avatar_url: url }).eq('id', me());
+  if (e2) return toast('Fotku se nepodařilo uložit.');
+  S.profile.avatar_url = url;
+  if (old) sb.storage.from('avatars').remove([old]).catch(() => {});
+  toast('Profilovka uložena');
+}
+async function removeAvatar() {
+  const old = avatarPath(S.profile.avatar_url);
+  const { error } = await sb.from('profiles').update({ avatar_url: null }).eq('id', me());
+  if (error) return toast('Nepodařilo se uložit.');
+  S.profile.avatar_url = null;
+  if (old) sb.storage.from('avatars').remove([old]).catch(() => {});
+}
+function openProfileEdit() {
+  const f = JSON.parse(JSON.stringify(S.favs || {}));
+  const lib = S.books.filter((b) => b.list === 'library');
+  const uniq = (a) => [...new Set(a.filter(Boolean).map((x) => x.trim()))].sort(cmpCs);
+  const opts = (a) => a.map((x) => `<option value="${esc(x)}">`).join('');
+  const field = ([k, label, type]) => {
+    if (type === 'book' || type === 'audio') return `<label class="f">${label}</label><div class="fav-pick" data-fk="${k}"></div>`;
+    if (type === 'genre') return `<label class="f" for="fv-${k}">${label}</label><select class="sel inp" id="fv-${k}"><option value="">Nevybráno</option>${uniq([...GENRES, ...S.books.flatMap((b) => b.tags || [])]).map((g) => `<option ${f[k] === g ? 'selected' : ''}>${esc(g)}</option>`).join('')}</select>`;
+    if (type === 'quote') return `<label class="f" for="fv-${k}">${label}</label><textarea class="inp" id="fv-${k}" maxlength="400" rows="3" placeholder="Věta, která ti utkvěla">${esc(f[k] || '')}</textarea>
+      <input class="inp" id="fv-quote_src" style="margin-top:6px" maxlength="120" placeholder="Odkud je (kniha, autor)" value="${esc(f.quote_src || '')}">`;
+    const list = type === 'series' ? uniq([...S.series.map((x) => x.name), ...S.books.map((b) => b.series_name)])
+      : type === 'author' ? uniq(lib.map((b) => cleanAuthor(b.author)))
+      : uniq(S.books.map((b) => b.narrator));
+    return `<label class="f" for="fv-${k}">${label}</label><input class="inp" id="fv-${k}" maxlength="120" list="dl-${k}" value="${esc(f[k] || '')}" placeholder="Napiš nebo vyber"><datalist id="dl-${k}">${opts(list)}</datalist>`;
+  };
+  const { el, close } = sheet(`${head('Upravit profil')}
+    <label class="f" for="pdn">Jméno</label><input class="inp" id="pdn" maxlength="60" value="${esc(S.profile.display_name || '')}">
+    <label class="f">Profilová fotka</label>
+    <div class="row" style="align-items:center;gap:10px"><span id="pavw">${avHtml(S.profile)}</span><button type="button" class="mini" id="pph">Vybrat fotku</button><button type="button" class="mini" id="pphx" ${S.profile.avatar_url ? '' : 'hidden'}>Odebrat</button></div>
+    <input type="file" id="pph-in" accept="image/*" hidden>
+    <h2 style="margin-top:22px">Oblíbené</h2>
+    <p class="hint" style="margin-top:-4px">Vyplň jen to, co chceš. Prázdné se na profilu neukáže. Vidí to jen tví přátelé.</p>
+    <label class="check"><input type="checkbox" id="fv-show" ${f.show_reading ? 'checked' : ''}> Ukazovat, co právě čtu</label>
+    <label class="f" for="fv-about">Pár slov o mně</label><textarea class="inp" id="fv-about" maxlength="400" rows="2" placeholder="Co ráda čteš, kde čteš nejradši…">${esc(f.about || '')}</textarea>
+    ${FAV_DEFS.map(field).join('')}
+    <div class="err" id="perr"></div>
+    <button class="btn primary" id="psave" style="margin-top:16px">Uložit</button>`);
+  // Book favourites: pick from your own library with a little inline search.
+  el.querySelectorAll('.fav-pick').forEach((box) => {
+    const k = box.dataset.fk, audio = FAV_DEFS.find((d) => d[0] === k)[2] === 'audio';
+    const pool = lib.filter((b) => (audio ? isAudio(b) : !isAudio(b)));
+    const draw = (open) => {
+      const v = f[k];
+      box.innerHTML = `${v && v.title ? `<div class="fav-cur">${favBookHtml(v, [], true)}<button type="button" class="mini" data-ch>Změnit</button><button type="button" class="icon-btn sm" data-x aria-label="Odebrat">${I.x}</button></div>`
+        : `<button type="button" class="mini" data-ch>${audio ? 'Vybrat audioknihu' : 'Vybrat knihu'}</button>`}
+        ${open ? `<div class="fav-search"><input class="inp" data-q placeholder="${pool.length ? 'Hledat ve své knihovně' : 'V knihovně zatím nic není'}"><div class="list fav-res"></div></div>` : ''}`;
+      box.querySelector('[data-ch]').onclick = () => draw(!open);
+      const x = box.querySelector('[data-x]'); if (x) x.onclick = () => { delete f[k]; draw(false); };
+      if (!open) return;
+      const q = box.querySelector('[data-q]'), res = box.querySelector('.fav-res');
+      const show = () => {
+        const hits = pool.filter((b) => matchQ(b, q.value.trim())).slice(0, 6);
+        res.innerHTML = hits.map((b) => `<button type="button" class="li" data-pid="${b.id}"><div class="grow"><b>${esc(b.title)}</b><span>${esc(b.author || '')}</span></div></button>`).join('') || '<p class="sub" style="padding:10px 12px">Nic takového v knihovně nemáš.</p>';
+        res.querySelectorAll('[data-pid]').forEach((r) => (r.onclick = () => {
+          const b = pool.find((x) => x.id === r.dataset.pid);
+          f[k] = { id: b.id, title: b.title, author: b.author || '', cover_url: safeUrl(b.cover_url) || null };
+          draw(false);
+        }));
+      };
+      q.oninput = show; show(); q.focus();
+    };
+    draw(false);
+  });
+  const pin = el.querySelector('#pph-in'), px = el.querySelector('#pphx');
+  const drawAv = () => { el.querySelector('#pavw').innerHTML = avHtml(S.profile); px.hidden = !S.profile.avatar_url; };
+  el.querySelector('#pph').onclick = () => pin.click();
+  pin.onchange = async () => { const fl = pin.files[0]; pin.value = ''; if (fl) { await setAvatar(fl); drawAv(); render(); } };
+  px.onclick = async () => { await removeAvatar(); drawAv(); render(); };
+  el.querySelector('#psave').onclick = async () => {
+    const err = el.querySelector('#perr');
+    const name = el.querySelector('#pdn').value.trim();
+    if (!name) return (err.textContent = 'Jméno nesmí být prázdné.');
+    const out = {};
+    FAV_DEFS.forEach(([k, , type]) => {
+      if (type === 'book' || type === 'audio') { if (f[k]?.title) out[k] = f[k]; return; }
+      const v = el.querySelector('#fv-' + k).value.trim();
+      if (v) out[k] = v;
+    });
+    const src = el.querySelector('#fv-quote_src').value.trim(); if (out.quote && src) out.quote_src = src;
+    const about = el.querySelector('#fv-about').value.trim(); if (about) out.about = about;
+    if (el.querySelector('#fv-show').checked) out.show_reading = true;
+    const btn = el.querySelector('#psave'); btn.disabled = true;
+    const { error } = await sb.from('profile_favs').upsert({ user_id: me(), favs: out, updated_at: new Date().toISOString() });
+    let e2 = null;
+    if (!error && name !== S.profile.display_name) ({ error: e2 } = await sb.from('profiles').update({ display_name: name }).eq('id', me()));
+    btn.disabled = false;
+    if (error || e2) return (err.textContent = 'Nepodařilo se uložit. Zkus to znovu.');
+    S.favs = out; S.profile.display_name = name;
+    close(); render(); toast('Profil uložen');
+  };
+}
+function openPassword() {
+  const { el, close } = sheet(`${head('Změnit heslo')}
+    <form id="pwf" novalidate>
+      <label class="f" for="pw1">Nové heslo</label><input class="inp" id="pw1" type="password" autocomplete="new-password" placeholder="Aspoň 8 znaků">
+      <label class="f" for="pw2">Nové heslo ještě jednou</label><input class="inp" id="pw2" type="password" autocomplete="new-password">
+      <div class="err" id="pwerr"></div>
+      <button class="btn primary" style="margin-top:14px">Změnit heslo</button></form>`);
+  el.querySelector('#pwf').onsubmit = async (e) => {
+    e.preventDefault();
+    const a = el.querySelector('#pw1').value, b = el.querySelector('#pw2').value, err = el.querySelector('#pwerr');
+    if (a.length < 8) return (err.textContent = 'Heslo musí mít aspoň 8 znaků.');
+    if (a !== b) return (err.textContent = 'Hesla se neshodují.');
+    err.textContent = '';
+    const btn = el.querySelector('button.primary'); btn.disabled = true; btn.textContent = 'Měním…';
+    const { error } = await sb.auth.updateUser({ password: a });
+    btn.disabled = false; btn.textContent = 'Změnit heslo';
+    if (error) {
+      const c = error.code || '';
+      err.textContent = c === 'same_password' ? 'Tohle heslo už máš. Zvol jiné.'
+        : c === 'weak_password' ? 'Heslo je moc slabé nebo uniklo z jiných webů. Zvol jiné.'
+        : c === 'reauthentication_needed' ? 'Z bezpečnostních důvodů se odhlas, přihlas znovu a zkus to hned potom.'
+        : 'Heslo se nepodařilo změnit. Zkus to znovu.';
+      return;
+    }
+    close(); toast('Heslo změněno');
   };
 }
 
@@ -1475,7 +1778,7 @@ function viewYear() {
     : `<div class="empty">V roce ${y} zatím nic dočteného. Až knihu označíš jako přečtenou, objeví se tady.</div>`}`;
 }
 function bindYear() {
-  const bl = document.getElementById('back-lib'); if (bl) bl.onclick = () => { S.view = 'library'; render(); window.scrollTo(0, 0); };
+  const bl = document.getElementById('back-lib'); if (bl) bl.onclick = () => goBack(() => { S.view = 'library'; render(); window.scrollTo(0, 0); });
   $app.querySelectorAll('[data-year]').forEach((b) => (b.onclick = () => { S.statYear = +b.dataset.year; render(); }));
   const sg = document.getElementById('set-goal'); if (sg) sg.onclick = openGoal;
   const fd = document.getElementById('fill-dates'); if (fd) fd.onclick = openFillDates;
@@ -1538,11 +1841,11 @@ function openFillDates() {
    "Co číst dál?" – random pick from the unread pile in the library
    ==================================================================== */
 const PICK = { format: 'all', lang: '', genre: '', paused: false, seen: new Set() };
-const pilePool = () => S.books.filter((b) => b.list === 'library' && (b.status === 'unread' || (PICK.paused && b.status === 'paused'))
+const pilePool = () => S.books.filter((b) => b.list === 'library' && b.loan_type !== 'returned' && (b.status === 'unread' || (PICK.paused && b.status === 'paused'))
   && (PICK.format === 'all' || (b.format || 'book') === PICK.format)
   && (!PICK.lang || (b.language || 'cs') === PICK.lang)
   && (!PICK.genre || (b.tags || []).includes(PICK.genre)));
-const pileCount = () => S.books.filter((b) => b.list === 'library' && b.status === 'unread').length;
+const pileCount = () => S.books.filter((b) => b.list === 'library' && b.loan_type !== 'returned' && b.status === 'unread').length;
 function openPick() {
   PICK.seen = new Set();
   let current = null;
@@ -1557,7 +1860,7 @@ function openPick() {
     draw();
   };
   const draw = () => {
-    const all = S.books.filter((b) => b.list === 'library' && (b.status === 'unread' || (PICK.paused && b.status === 'paused')));
+    const all = S.books.filter((b) => b.list === 'library' && b.loan_type !== 'returned' && (b.status === 'unread' || (PICK.paused && b.status === 'paused')));
     const genres = [...new Set(all.flatMap((b) => b.tags || []))].sort(cmpCs);
     const langs = LANGS.filter(([k]) => all.some((b) => (b.language || 'cs') === k));
     const n = pilePool().length;
@@ -1664,7 +1967,7 @@ function openSeriesList() {
     ${list.length ? `<div class="list">${list.map((s) => `<button class="li" data-ser="${esc(s.name)}" style="width:100%;text-align:left">
         <div class="ser-covers">${s.owned.slice(0, 3).map((b) => `<div class="thumb">${coverHtml(b)}</div>`).join('')}</div>
         <div class="grow"><b>${esc(s.name)}</b><span>máš ${s.have} z ${s.total}</span><div class="bar"><i style="width:${Math.round((s.have / Math.max(1, s.total)) * 100)}%"></i></div></div></button>`).join('')}</div>`
-    : '<p class="sub">Zatím žádné série. V knihovně klikni na „Najít série“, nebo sérii vyplň v úpravě knihy.</p>'}`);
+    : '<p class="sub">Zatím žádné série. V knihovně klikni na „Najít série“, nebo sérii vyplň v úpravě knihy.</p>'}`, null, openSeriesList);
   el.querySelectorAll('[data-ser]').forEach((b) => (b.onclick = () => { close(); openSeries(b.dataset.ser); }));
 }
 function openSeries(name) {
@@ -1683,7 +1986,7 @@ function openSeries(name) {
   const { el, close } = sheet(`${head(name)}
     <p class="sub">Máš ${have.size} z ${indices.length} dílů</p>
     <div class="list" style="margin-top:12px">${indices.map(row).join('')}${noIdx.map((b) => `<button class="li book" data-id="${b.id}" data-own="1" style="width:100%;text-align:left"><span class="ser-n">?</span><div class="grow"><b>${esc(b.title)}</b><span>bez čísla dílu</span></div></button>`).join('')}</div>
-    <p class="hint">Číslo dílu nebo sérii opravíš v úpravě knihy.</p>`);
+    <p class="hint">Číslo dílu nebo sérii opravíš v úpravě knihy.</p>`, null, () => openSeries(name));
   el.querySelectorAll('.book').forEach((b) => (b.onclick = () => { close(); openBook(b.dataset.id, true); }));
   el.querySelectorAll('[data-wish]').forEach((btn) => (btn.onclick = async () => {
     const i = +btn.dataset.wish, part = cat.find((p) => p.index === i);
@@ -1800,7 +2103,7 @@ async function boot() {
   if (!S.session) return renderAuth();
   await loadProfile();
   if (!S.profile) return renderProfileSetup();
-  await Promise.all([loadBooks(), loadFriends(), loadGoals(), loadSeries(), loadLoans(), loadMyReservations()]);
+  await Promise.all([loadBooks(), loadFriends(), loadGoals(), loadSeries(), loadLoans(), loadMyReservations(), loadFavs()]);
   let pritel = null;
   try { pritel = localStorage.getItem('tsundoku_pritel'); localStorage.removeItem('tsundoku_pritel'); } catch (e) {}
   if (pritel) {
