@@ -30,6 +30,7 @@ const I = {
   left: ic('<path d="m15 6-6 6 6 6"/>'),
   tablet: ic('<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 7h6M9 11h6M9 15h3"/>'),
   headphones: ic('<path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="14" width="5" height="7" rx="2"/><rect x="16" y="14" width="5" height="7" rx="2"/>'),
+  image: ic('<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 17-5-5-9 8"/>'),
   grid: ic('<rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/>'),
   list: ic('<path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/>'),
   sliders: ic('<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>'),
@@ -847,7 +848,9 @@ function viewAdd() {
     <button class="add-opt" id="o-photo"><div class="ic">${I.camera}</div><div><b>${digital ? 'Fotka nebo screenshot jedné obálky' : 'Vyfotit obálku'}</b><span>${digital ? 'Pozná ji AI.' : 'Pro knihy bez kódu. Pozná ji AI.'}</span></div></button>
     ${digital ? '' : `<button class="add-opt" id="o-scan"><div class="ic">${I.barcode}</div><div><b>Naskenovat čárový kód</b><span>Kód ISBN na zadní straně. Nejrychlejší.</span></div></button>`}
   </div>
+  ${digital ? '' : `<button class="link-sub gal-link" id="o-gal">${I.image}Fotku obálky máš v galerii? Vyber ji odtud</button>`}
   <input type="file" id="photo-in" accept="image/*" ${digital ? '' : 'capture="environment"'} hidden>
+  <input type="file" id="gal-in" accept="image/*" hidden>
   <input type="file" id="shelf-in" accept="image/*" hidden>
   ${digital ? '<p class="hint" style="margin-top:16px">Tip: na screenshotu ať jsou vidět názvy celé. Když je seznam dlouhý, udělej víc screenshotů a nahraj je postupně.</p>' : '<p class="hint" style="margin-top:16px">Tip pro poličku: foť zepředu, rovně a při dobrém světle, nejvýš jednu nebo dvě police najednou, aby byly hřbety čitelné.</p>'}`;
 }
@@ -908,6 +911,9 @@ function bindView() {
     document.getElementById('o-search').onclick = () => openSearch();
     const pin = document.getElementById('photo-in');
     document.getElementById('o-photo').onclick = () => pin.click();
+    const gin = document.getElementById('gal-in'), og = document.getElementById('o-gal');
+    if (og) og.onclick = () => gin.click();
+    gin.onchange = () => { if (gin.files[0]) recognizePhoto(gin.files[0]); gin.value = ''; };
     pin.onchange = () => { if (pin.files[0]) recognizePhoto(pin.files[0]); pin.value = ''; };
     const sin = document.getElementById('shelf-in');
     const osh = document.getElementById('o-shelf') || document.getElementById('o-list'); if (osh) osh.onclick = () => sin.click();
@@ -1028,8 +1034,9 @@ async function openBook(id, own) {
       <div class="row"><a class="btn" id="gr" href="${esc(goodreadsUrl(b))}" target="_blank" rel="noopener">${I.ext}Goodreads</a>
         <a class="btn" href="${esc(dbkUrl(b))}" target="_blank" rel="noopener">${I.ext}Databáze knih</a></div>
       ${own ? `<button class="btn primary" id="ed">${I.edit}Upravit, hodnotit</button>
-        <button class="btn" id="cph">${I.camera}${safeUrl(b.cover_url) ? 'Vyměnit obálku za vlastní fotku' : 'Vyfotit obálku'}</button>
-        <input type="file" id="cph-in" accept="image/*" capture="environment" hidden>
+        <label class="f" style="margin:4px 0 -4px">${safeUrl(b.cover_url) ? 'Vyměnit obálku za vlastní fotku' : 'Přidat obálku'}</label>
+        <div class="row"><button class="btn" id="cph">${I.camera}Vyfotit</button><button class="btn" id="cgal">${I.image}Z galerie</button></div>
+        <input type="file" id="cph-in" accept="image/*" capture="environment" hidden><input type="file" id="cgal-in" accept="image/*" hidden>
         ${b.list === 'wishlist' ? `<button class="btn ${b.wish_top ? 'gold' : ''}" id="wtop">${b.wish_top ? '★ Nejvíc chci · zrušit' : '☆ Označit: tuhle chci nejvíc'}</button>
         <button class="btn" id="mv">${I.books}Mám ji, přesunout do knihovny</button>` : ''}
         ${b.loan_type === 'borrowed' ? `<button class="btn" id="ret">Vrátila jsem ji (nemám ji doma)</button>` : ''}`
@@ -1062,17 +1069,21 @@ async function openBook(id, own) {
       else if (r !== 'ok') toast('Podrobnosti se nepodařilo najít. Můžeš je doplnit ručně.');
       render(); openBook(b.id, true);
     };
-    const cph = el.querySelector('#cph'), cin = el.querySelector('#cph-in');
+    const cph = el.querySelector('#cph'), cin = el.querySelector('#cph-in'), cgal = el.querySelector('#cgal'), gin = el.querySelector('#cgal-in');
     cph.onclick = () => cin.click();
-    cin.onchange = async () => {
-      const f = cin.files[0]; if (!f) return;
-      cph.disabled = true; cph.textContent = 'Nahrávám fotku…';
+    cgal.onclick = () => gin.click();
+    const useCover = async (inp, btn) => {
+      const f = inp.files[0]; inp.value = ''; if (!f) return;
+      const label = btn.innerHTML;
+      cph.disabled = cgal.disabled = true; btn.textContent = 'Nahrávám…';
       let url = null;
       try { url = await uploadCover(await resizeImage(f, 900)); } catch (e) {}
-      if (!url) { cph.disabled = false; return toast('Fotku se nepodařilo nahrát.'); }
+      if (!url) { cph.disabled = cgal.disabled = false; btn.innerHTML = label; return toast('Fotku se nepodařilo nahrát.'); }
       await sb.from('books').update({ cover_url: url, cover_is_original: false }).eq('id', b.id);
       b.cover_url = url; b.cover_is_original = false; close(); render(); openBook(b.id, true); toast('Obálka uložena');
     };
+    cin.onchange = () => useCover(cin, cph);
+    gin.onchange = () => useCover(gin, cgal);
     const mv = el.querySelector('#mv');
     const wt = el.querySelector('#wtop');
     if (wt) wt.onclick = async () => {
@@ -1547,7 +1558,7 @@ function viewProfile() {
     <h2>Účet</h2>
     <div class="list acts">
       <button class="li" id="ppw">Změnit heslo</button>
-      <button class="li" id="pexp">Stáhnout knihovnu jako CSV</button>
+      <button class="li" id="pexp"><div class="grow"><b>Stáhnout knihovnu do Excelu</b><span>Tabulka .xlsx, otevřeš v Excelu, Numbers i Google Tabulkách</span></div></button>
       <button class="li" id="pabout">Co znamená tsundoku</button>
     </div>
     <p class="sub" style="font-size:12px;margin-top:8px">Přihlášená jako ${esc(S.session.user.email)}</p>
@@ -1561,11 +1572,72 @@ function bindProfile() {
   document.getElementById('ppw').onclick = openPassword;
   document.getElementById('pabout').onclick = openAbout;
   document.getElementById('plo').onclick = async () => { await sb.auth.signOut(); };
-  document.getElementById('pexp').onclick = () => {
-    const cols = ['title', 'author', 'isbn', 'year', 'list', 'status', 'rating', 'note'];
-    const csv = [cols.join(';'), ...S.books.map((b) => cols.map((c) => `"${String(b[c] ?? '').replace(/"/g, '""')}"`).join(';'))].join('\n');
-    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['﻿' + csv], { type: 'text/csv' })); a.download = 'tsundoku.csv'; a.click();
+  document.getElementById('pexp').onclick = () => { try { exportXlsx(); } catch (e) { toast('Export se nepovedl.'); } };
+}
+/* ---------- Export: Excel table (.xlsx), opens in Excel, Numbers and Google Sheets ---------- */
+const CRC_T = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+const crc32 = (u8) => { let c = 0xFFFFFFFF; for (let i = 0; i < u8.length; i++) c = CRC_T[(c ^ u8[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; };
+// Minimal ZIP writer (stored, no compression): enough for a small xlsx.
+function zipFiles(files) {
+  const enc = new TextEncoder(), parts = [], central = [];
+  let offset = 0;
+  for (const [name, text] of files) {
+    const data = enc.encode(text), nm = enc.encode(name), crc = crc32(data);
+    const lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0x0800, true); lh.setUint16(8, 0, true);
+    lh.setUint32(14, crc, true); lh.setUint32(18, data.length, true); lh.setUint32(22, data.length, true); lh.setUint16(26, nm.length, true);
+    parts.push(lh.buffer, nm, data);
+    const ch = new DataView(new ArrayBuffer(46));
+    ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x0800, true);
+    ch.setUint32(16, crc, true); ch.setUint32(20, data.length, true); ch.setUint32(24, data.length, true); ch.setUint16(28, nm.length, true); ch.setUint32(42, offset, true);
+    central.push(ch.buffer, nm);
+    offset += 30 + nm.length + data.length;
+  }
+  const cdSize = central.reduce((a, b) => a + b.byteLength, 0);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true); end.setUint16(8, files.length, true); end.setUint16(10, files.length, true); end.setUint32(12, cdSize, true); end.setUint32(16, offset, true);
+  return new Blob([...parts, ...central, end.buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+}
+const xmlEsc = (v) => String(v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+function sheetXml(rows, widths) {
+  const col = (i) => { let s = ''; i++; while (i) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; };
+  const cell = (v, r, c, head) => {
+    const ref = col(c) + (r + 1), st = head ? ' s="1"' : '';
+    if (v === null || v === undefined || v === '') return head ? `<c r="${ref}"${st}/>` : '';
+    if (typeof v === 'number') return `<c r="${ref}"${st}><v>${v}</v></c>`;
+    return `<c r="${ref}"${st} t="inlineStr"><is><t xml:space="preserve">${xmlEsc(v)}</t></is></c>`;
   };
+  const last = col(rows[0].length - 1) + rows.length;
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">`
+    + `<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>`
+    + `<cols>${widths.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join('')}</cols>`
+    + `<sheetData>${rows.map((r, ri) => `<row r="${ri + 1}">${r.map((v, ci) => cell(v, ri, ci, ri === 0)).join('')}</row>`).join('')}</sheetData>`
+    + `<autoFilter ref="A1:${last}"/></worksheet>`;
+}
+function exportXlsx() {
+  const head = ['Seznam', 'Název', 'Autor', 'Formát', 'Stav', 'Hodnocení', 'Dočteno', 'Jazyk', 'Série', 'Díl', 'Žánry', 'Rok vydání', 'Nakladatel', 'ISBN', 'Originální název', 'Půjčování', 'Čte (audiokniha)', 'Poznámka', 'Přidáno'];
+  const widths = [11, 34, 24, 11, 13, 10, 12, 10, 22, 6, 26, 10, 20, 15, 28, 24, 20, 40, 11];
+  const fin = (b) => (b.status !== 'read' ? '' : b.finished_precision === 'unknown' ? 'dávno' : !b.finished_at ? '' : b.finished_precision === 'year' ? b.finished_at.slice(0, 4) : fmtDate(b.finished_at));
+  const sorted = [...S.books].sort((a, b) => (a.list === b.list ? 0 : a.list === 'library' ? -1 : 1) || cmpCs(surnameOf(a.author), surnameOf(b.author)) || cmpCs(a.title, b.title));
+  const rows = [head, ...sorted.map((b) => [
+    b.list === 'wishlist' ? 'Wishlist' : 'Knihovna', b.title, b.author || '', fmtOne(b.format || 'book'),
+    b.list === 'wishlist' ? (b.wish_top ? 'Nejvíc chci' : '') : statusLabel(b), b.rating || '', fin(b),
+    LANG_NAME[b.language || 'cs'] || b.language || '', b.series_name || '', b.series_index ? +b.series_index : '', (b.tags || []).join(', '),
+    b.year ? +b.year || b.year : '', b.publisher || '', b.isbn || '', b.original_title || '', loanText(b), b.narrator || '', b.note || '',
+    b.created_at ? fmtDate(b.created_at.slice(0, 10)) : '']), ];
+  const files = [
+    ['[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>'],
+    ['_rels/.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'],
+    ['xl/workbook.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Moje knihy" sheetId="1" r:id="rId1"/></sheets><definedNames><definedName name="_xlnm._FilterDatabase" localSheetId="0" hidden="1">\'Moje knihy\'!$A$1:$' + 'S$' + rows.length + '</definedName></definedNames></workbook>'],
+    ['xl/_rels/workbook.xml.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'],
+    ['xl/styles.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF2F4A3A"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>'],
+    ['xl/worksheets/sheet1.xml', sheetXml(rows, widths)],
+  ];
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(zipFiles(files));
+  a.download = `tsundoku-knihovna-${todayISO()}.xlsx`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 }
 const avatarPath = (url) => (url || '').split('/storage/v1/object/public/avatars/')[1] || null;
 async function setAvatar(file) {

@@ -326,3 +326,5 @@ select.sel.inp{width:100%;flex:none;padding:10px 32px 10px 12px;font-size:16px}
 .fav-res{margin-top:6px;max-height:240px;overflow:auto}
 .fav-res .li{width:100%;text-align:left;padding:9px 12px}
 .fav-pick .fav-cur + .fav-cur,.fav-pick .fav-cur + .mini,.fav-pick .fav-cur + .hint{margin-top:6px}
+.gal-link{display:flex;align-items:center;gap:6px;margin:12px auto 0}
+.gal-link svg{width:16px;height:16px;flex-shrink:0}
