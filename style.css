@@ -204,3 +204,65 @@ select.sel.inp{width:100%;flex:none;padding:10px 32px 10px 12px;font-size:16px}
 .banner.wl{background:var(--wine-soft);border-color:var(--wine-soft)}
 .banner.wl b{display:flex;align-items:center;gap:6px;color:var(--wine)}
 .banner.wl b svg{width:16px;height:16px}
+.desc-box{padding:12px 14px}
+.desc-box .mini{display:inline-flex;align-items:center;gap:6px}
+.desc-box .mini svg{width:14px;height:14px}
+#dsw textarea{min-height:140px}
+/* reading year */
+.yearcard{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:12px 14px;margin-bottom:10px}
+.yearcard .grow{flex:1;min-width:0}.yearcard b{display:block;font-weight:600}.yearcard span{font-size:13px;color:var(--ink-2)}
+.chev{width:18px;height:18px;transform:rotate(180deg);color:var(--ink-2);flex-shrink:0}
+.bar{height:6px;border-radius:99px;background:var(--line);overflow:hidden;margin-top:6px}
+.bar i{display:block;height:100%;background:var(--green);border-radius:99px}
+.bar.big{height:10px}
+.pickbtn{margin-bottom:14px;justify-content:flex-start;gap:10px;font-weight:600}
+.pickbtn svg{width:22px;height:22px;color:var(--wine)}
+.pickbtn .n{margin-left:auto;font-weight:400;font-size:13px;color:var(--ink-2)}
+.goal{margin:6px 0 14px}
+.goal-top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+.goal .big{font-family:var(--serif);font-size:40px;font-weight:600;color:var(--green);line-height:1}
+.goal .big small{font-size:20px;color:var(--ink-2)}
+.st-h{font-family:var(--serif);font-size:17px;font-weight:600;margin:20px 0 8px}
+.months{display:grid;grid-template-columns:repeat(12,1fr);gap:4px;align-items:end;height:130px}
+.mcol{display:flex;flex-direction:column;align-items:center;height:100%;font-size:10px;color:var(--ink-2)}
+.mbar{flex:1;width:100%;display:flex;align-items:flex-end}
+.mbar i{display:block;width:100%;background:var(--green);border-radius:4px 4px 0 0;min-height:2px}
+.mcol b{font-size:11px;color:var(--ink);min-height:14px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:16px}
+.stats div{background:var(--paper-2);border:1px solid var(--line);border-radius:12px;padding:10px;text-align:center}
+.stats b{display:block;font-family:var(--serif);font-size:22px;color:var(--green)}
+.stats span{font-size:12px;color:var(--ink-2)}
+.st-list{display:grid;gap:4px}
+.st-list div{display:flex;justify-content:space-between;padding:6px 12px;background:var(--paper-2);border-radius:8px;font-size:14px}
+.mhead{font-size:13px;color:var(--ink-2);text-transform:capitalize;margin:12px 0 6px}
+.goal-pick{display:flex;gap:10px;align-items:center;justify-content:center;margin:16px 0}
+.goal-pick .inp{width:110px;text-align:center;font-size:28px;font-family:var(--serif)}
+.goal-pick .icon-btn{width:48px;height:48px;font-size:24px}
+.yrsel{flex:0 0 96px;width:96px;font-size:14px}
+.qdate{margin-top:10px;align-items:center;justify-content:center}
+.qdate label{font-size:14px;color:var(--ink-2)}
+.qdate .inp{width:auto}
+/* pick */
+.pick{text-align:center}
+.pick-cover{width:120px;margin:4px auto 12px}
+.pick h2{margin:0 0 2px}
+.tog{display:flex;align-items:center;gap:6px;font-size:14px;white-space:nowrap}
+.tog input{width:18px;height:18px;accent-color:var(--green)}
+/* series */
+.ser-chip{border-style:dashed}
+.ser-line{display:flex;align-items:center;gap:8px;margin:8px 0 0;padding:8px 12px;border-radius:10px;background:var(--green-soft);color:var(--green);font-size:14px;font-weight:500;width:100%;text-align:left}
+.ser-line svg{width:16px;height:16px}
+.ser-covers{display:flex;flex-shrink:0;width:64px}
+.ser-covers .thumb{width:30px;margin-right:-12px}
+.ser-covers .cover{font-size:5px;padding:2px;border:1px solid var(--paper)}
+.ser-n{width:24px;text-align:center;font-family:var(--serif);font-weight:600;color:var(--ink-2);flex-shrink:0}
+.li.missing .grow b{color:var(--ink-2);font-weight:500}
+.ok{color:var(--green);font-weight:700}
+.li .thumb .cover{font-size:6px;padding:3px}
+/* friends */
+.res-card{display:grid;gap:4px;padding:12px 14px;background:var(--wine-soft);border-color:var(--wine-soft)}
+.res-card b{display:flex;align-items:center;gap:6px;color:var(--wine)}
+.res-card b svg{width:16px;height:16px}
+.res-card span{font-size:13px;color:var(--ink-2)}
+.res-card .mini{justify-self:start;margin-top:4px}
+.li.book{display:flex;align-items:center}.li.book .grow{min-width:0}
