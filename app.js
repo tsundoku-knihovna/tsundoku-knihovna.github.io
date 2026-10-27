@@ -1494,7 +1494,7 @@ function openSearch() {
 /* ---------- Profile: photo, password, favourites ---------- */
 // Everything is optional; only filled-in items are shown (and only to friends).
 const FAV_DEFS = [
-  ['book', 'Nejoblíbenější kniha', 'book'],
+  ['book', 'Nejoblíbenější knihy', 'book', 3],
   ['series', 'Nejoblíbenější série', 'series'],
   ['author', 'Nejoblíbenější autor nebo autorka', 'author'],
   ['genre', 'Nejoblíbenější žánr', 'genre'],
@@ -1504,7 +1504,8 @@ const FAV_DEFS = [
   ['narrator', 'Nejoblíbenější hlas audioknih', 'narrator'],
   ['quote', 'Oblíbený citát', 'quote'],
 ];
-const favsAny = (f, books) => !!f && (FAV_DEFS.some(([k]) => f[k]) || !!f.about || (f.show_reading && (books || []).some((b) => b.list === 'library' && b.status === 'reading')));
+const favArr = (v) => (Array.isArray(v) ? v : v ? [v] : []).filter((x) => x && x.title);
+const favsAny = (f, books) => !!f && (FAV_DEFS.some(([k, , t]) => (t === 'book' || t === 'audio' ? favArr(f[k]).length : f[k])) || !!f.about || (f.show_reading && (books || []).some((b) => b.list === 'library' && b.status === 'reading')));
 function favBookHtml(v, books, own) {
   const b = books.find((x) => x.id === v.id);
   const inner = `<div class="thumb">${coverHtml(b || v)}</div><div class="grow"><b>${esc(v.title)}</b><span>${esc(v.author || '')}</span></div>`;
@@ -1518,7 +1519,10 @@ function favsHtml(f, books, own) {
   FAV_DEFS.forEach(([k, label, type]) => {
     const v = f[k];
     if (!v) return;
-    if (type === 'book' || type === 'audio') { if (v.title) out.push(`<div class="fav"><label>${label}</label>${favBookHtml(v, books, own)}</div>`); }
+    if (type === 'book' || type === 'audio') {
+      const arr = favArr(v);
+      if (arr.length) out.push(`<div class="fav"><label>${arr.length === 1 ? label.replace('knihy', 'kniha') : label}</label>${arr.map((x) => favBookHtml(x, books, own)).join('')}</div>`);
+    }
     else if (type === 'quote') out.push(`<div class="fav"><label>${label}</label><blockquote>„${esc(v)}“${f.quote_src ? `<cite>${esc(f.quote_src)}</cite>` : ''}</blockquote></div>`);
     else out.push(`<div class="fav"><label>${label}</label><b class="fav-txt">${esc(v)}</b></div>`);
   });
@@ -1615,24 +1619,28 @@ function openProfileEdit() {
     <button class="btn primary" id="psave" style="margin-top:16px">Uložit</button>`);
   // Book favourites: pick from your own library with a little inline search.
   el.querySelectorAll('.fav-pick').forEach((box) => {
-    const k = box.dataset.fk, audio = FAV_DEFS.find((d) => d[0] === k)[2] === 'audio';
+    const def = FAV_DEFS.find((d) => d[0] === box.dataset.fk), k = def[0], audio = def[2] === 'audio', max = def[3] || 1;
     const pool = lib.filter((b) => (audio ? isAudio(b) : !isAudio(b)));
+    let arr = favArr(f[k]);
+    const store = () => { if (!arr.length) delete f[k]; else f[k] = max > 1 ? arr : arr[0]; };
     const draw = (open) => {
-      const v = f[k];
-      box.innerHTML = `${v && v.title ? `<div class="fav-cur">${favBookHtml(v, [], true)}<button type="button" class="mini" data-ch>Změnit</button><button type="button" class="icon-btn sm" data-x aria-label="Odebrat">${I.x}</button></div>`
-        : `<button type="button" class="mini" data-ch>${audio ? 'Vybrat audioknihu' : 'Vybrat knihu'}</button>`}
+      const word = audio ? 'audioknihu' : 'knihu';
+      const btnLabel = max === 1 ? (arr.length ? 'Změnit' : `Vybrat ${word}`) : arr.length ? `Přidat další (ještě ${max - arr.length})` : `Vybrat ${word}`;
+      box.innerHTML = `${arr.map((v, i) => `<div class="fav-cur">${favBookHtml(v, [], true)}<button type="button" class="icon-btn sm" data-x="${i}" aria-label="Odebrat">${I.x}</button></div>`).join('')}
+        ${max === 1 || arr.length < max ? `<button type="button" class="mini" data-ch>${btnLabel}</button>` : `<p class="hint" style="margin:0">Máš vybrané ${max}. Pro jinou nejdřív jednu odeber.</p>`}
         ${open ? `<div class="fav-search"><input class="inp" data-q placeholder="${pool.length ? 'Hledat ve své knihovně' : 'V knihovně zatím nic není'}"><div class="list fav-res"></div></div>` : ''}`;
-      box.querySelector('[data-ch]').onclick = () => draw(!open);
-      const x = box.querySelector('[data-x]'); if (x) x.onclick = () => { delete f[k]; draw(false); };
+      const ch = box.querySelector('[data-ch]'); if (ch) ch.onclick = () => draw(!open);
+      box.querySelectorAll('[data-x]').forEach((x) => (x.onclick = () => { arr.splice(+x.dataset.x, 1); store(); draw(false); }));
       if (!open) return;
       const q = box.querySelector('[data-q]'), res = box.querySelector('.fav-res');
       const show = () => {
-        const hits = pool.filter((b) => matchQ(b, q.value.trim())).slice(0, 6);
+        const hits = pool.filter((b) => !arr.some((a) => a.id === b.id) && matchQ(b, q.value.trim())).slice(0, 6);
         res.innerHTML = hits.map((b) => `<button type="button" class="li" data-pid="${b.id}"><div class="grow"><b>${esc(b.title)}</b><span>${esc(b.author || '')}</span></div></button>`).join('') || '<p class="sub" style="padding:10px 12px">Nic takového v knihovně nemáš.</p>';
         res.querySelectorAll('[data-pid]').forEach((r) => (r.onclick = () => {
           const b = pool.find((x) => x.id === r.dataset.pid);
-          f[k] = { id: b.id, title: b.title, author: b.author || '', cover_url: safeUrl(b.cover_url) || null };
-          draw(false);
+          const v = { id: b.id, title: b.title, author: b.author || '', cover_url: safeUrl(b.cover_url) || null };
+          if (max === 1) arr = [v]; else arr.push(v);
+          store(); draw(false);
         }));
       };
       q.oninput = show; show(); q.focus();
@@ -1650,7 +1658,7 @@ function openProfileEdit() {
     if (!name) return (err.textContent = 'Jméno nesmí být prázdné.');
     const out = {};
     FAV_DEFS.forEach(([k, , type]) => {
-      if (type === 'book' || type === 'audio') { if (f[k]?.title) out[k] = f[k]; return; }
+      if (type === 'book' || type === 'audio') { if (favArr(f[k]).length) out[k] = f[k]; return; }
       const v = el.querySelector('#fv-' + k).value.trim();
       if (v) out[k] = v;
     });
