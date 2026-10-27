@@ -1,4 +1,4 @@
-const CACHE = 'tsundoku-v18';
+const CACHE = 'tsundoku-v19';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'icon.svg', 'manifest.webmanifest', 'vendor/supabase.js', 'vendor/html5-qrcode.min.js'];
 
 self.addEventListener('install', (e) => {

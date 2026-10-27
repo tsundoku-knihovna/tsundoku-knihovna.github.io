@@ -198,3 +198,4 @@ select.sel.inp{width:100%;flex:none;padding:10px 32px 10px 12px;font-size:16px}
 .seg.seg4 button{font-size:13px;padding:9px 2px}
 .pill.st-paused{background:#ECE7DF;color:#7A6F63}
 .pill.st-reading{background:#F5ECD3;color:#7A5B12}
+.fmtseg button{font-size:13px;gap:3px;padding:10px 2px}.fmtseg svg{width:15px;height:15px}
