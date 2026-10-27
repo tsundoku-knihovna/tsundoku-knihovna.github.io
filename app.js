@@ -403,7 +403,33 @@ async function searchBooks(q) {
 }
 
 /* ---------- Auth ---------- */
+function renderForgot(msg = '', ok = false) {
+  $app.innerHTML = `<div class="auth">
+    <h1>Tsundoku</h1>
+    <p class="sub">Zapomenuté heslo? Pošleme ti e-mailem odkaz, přes který si nastavíš nové.</p>
+    <form id="fgf" class="card" novalidate>
+      <label class="f" for="fem">E-mail, se kterým se přihlašuješ</label>
+      <input class="inp" id="fem" type="email" autocomplete="email" placeholder="jmeno@email.cz" value="${esc(S.authEmail || '')}" required>
+      <div class="err" id="ferr2" ${ok ? 'style="color:var(--green)"' : ''}>${esc(msg)}</div>
+      <button class="btn primary" type="submit">Poslat odkaz</button>
+    </form>
+    <p class="hint" style="text-align:center;margin-top:16px"><button class="link" id="fback">Zpět na přihlášení</button></p>
+  </div>`;
+  document.getElementById('fback').onclick = () => { S.authMode = 'login'; renderAuth(); };
+  document.getElementById('fgf').onsubmit = async (e) => {
+    e.preventDefault();
+    const em = document.getElementById('fem').value.trim(), err = document.getElementById('ferr2');
+    if (!/^\S+@\S+\.\S+$/.test(em)) return (err.textContent = 'Zadej platný e-mail.');
+    S.authEmail = em;
+    const btn = e.target.querySelector('button[type=submit]'); btn.disabled = true; btn.textContent = 'Posílám…';
+    const { error } = await sb.auth.resetPasswordForEmail(em, { redirectTo: location.origin + location.pathname });
+    btn.disabled = false; btn.textContent = 'Poslat odkaz';
+    if (error) { err.style.color = ''; return (err.textContent = (error.status === 429 || /rate limit|security purposes/i.test(error.message || '')) ? 'Odkaz už odešel před chvílí. Počkej pár minut a zkus to znovu (koukni i do spamu).' : 'Odkaz se nepodařilo poslat. Zkus to znovu.'); }
+    renderForgot('Hotovo. Jestli k tomuhle e-mailu existuje účet, přišel ti odkaz (koukni i do spamu). Otevři ho a nastav si nové heslo.', true);
+  };
+}
 function renderAuth(msg = '') {
+  if (S.authMode === 'forgot') return renderForgot(msg);
   const signup = S.authMode === 'signup';
   $app.innerHTML = `<div class="auth">
     <h1>Tsundoku</h1>
@@ -416,11 +442,13 @@ function renderAuth(msg = '') {
       <input class="inp" id="pw" type="password" autocomplete="${signup ? 'new-password' : 'current-password'}" placeholder="${signup ? 'Aspoň 8 znaků' : ''}" required>
       <div class="err" id="aerr">${esc(msg)}</div>
       <button class="btn primary" type="submit">${signup ? 'Vytvořit účet' : 'Přihlásit se'}</button>
+      ${signup ? '' : '<p style="text-align:center;margin-top:12px"><button type="button" class="link" id="forgot">Zapomněla jsi heslo?</button></p>'}
     </form>
     <p class="hint" style="text-align:center;margin-top:16px">${signup ? 'Už máš účet?' : 'Ještě nemáš účet?'}
       <button class="link" id="sw">${signup ? 'Přihlas se' : 'Zaregistruj se'}</button></p>
   </div>`;
   document.getElementById('sw').onclick = () => { S.authMode = signup ? 'login' : 'signup'; renderAuth(); };
+  const fg = document.getElementById('forgot'); if (fg) fg.onclick = () => { S.authEmail = document.getElementById('em').value.trim(); S.authMode = 'forgot'; renderAuth(); };
   document.getElementById('authf').onsubmit = async (e) => {
     e.preventDefault();
     const em = document.getElementById('em').value.trim();
@@ -437,7 +465,8 @@ function renderAuth(msg = '') {
     } else {
       const { error } = await sb.auth.signInWithPassword({ email: em, password: pw });
       btn.disabled = false;
-      if (error) err.textContent = authErr(error);
+      if (error) err.innerHTML = esc(authErr(error)) + (/invalid login/i.test(error.message || '') ? ' <button type="button" class="link" id="forgot2">Nepamatuješ si ho?</button>' : '');
+      const f2 = document.getElementById('forgot2'); if (f2) f2.onclick = () => { S.authEmail = em; S.authMode = 'forgot'; renderAuth(); };
     }
   };
 }
@@ -1747,8 +1776,9 @@ function openProfileEdit() {
     close(); render(); toast('Profil uložen');
   };
 }
-function openPassword() {
-  const { el, close } = sheet(`${head('Změnit heslo')}
+function openPassword(recovery = false) {
+  const { el, close } = sheet(`${head(recovery ? 'Nastav si nové heslo' : 'Změnit heslo')}
+    ${recovery ? '<p class="sub" style="margin-bottom:6px">Přihlásila ses přes odkaz z e-mailu. Teď si zvol nové heslo.</p>' : ''}
     <form id="pwf" novalidate>
       <label class="f" for="pw1">Nové heslo</label><input class="inp" id="pw1" type="password" autocomplete="new-password" placeholder="Aspoň 8 znaků">
       <label class="f" for="pw2">Nové heslo ještě jednou</label><input class="inp" id="pw2" type="password" autocomplete="new-password">
@@ -1771,7 +1801,7 @@ function openPassword() {
         : 'Heslo se nepodařilo změnit. Zkus to znovu.';
       return;
     }
-    close(); toast('Heslo změněno');
+    close(); toast(recovery ? 'Nové heslo je nastavené' : 'Heslo změněno');
   };
 }
 
@@ -2192,6 +2222,7 @@ async function boot() {
     return;
   }
   render();
+  if (S.recovery) { S.recovery = false; openPassword(true); }
   setTimeout(backfillCovers, 1500);
 }
 // Once a day, quietly try free catalogues for books that still have no cover.
@@ -2221,6 +2252,8 @@ async function backfillCovers() {
 }
 let booted = false;
 sb.auth.onAuthStateChange((ev, session) => {
+  // Opened the "forgotten password" link: ask for a new password once the app has loaded.
+  if (ev === 'PASSWORD_RECOVERY') { if (S.profile && booted) setTimeout(() => openPassword(true), 300); else S.recovery = true; }
   const changedUser = (S.session?.user?.id || null) !== (session?.user?.id || null);
   S.session = session;
   if (!booted || changedUser) {
