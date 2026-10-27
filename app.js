@@ -39,7 +39,7 @@ const initials = (n) => (n || '?').split(/\s+/).map((w) => w[0]).slice(0, 2).joi
 const starsTxt = (r) => (r ? '★'.repeat(r) + '☆'.repeat(5 - r) : '');
 const COVER_COLORS = ['#2F4A3A', '#8C3B2E', '#C9A24A', '#5C6B73', '#A6705A', '#3E5C76', '#6B5B4B'];
 const coverColor = (t) => COVER_COLORS[[...(t || '')].reduce((a, c) => a + c.charCodeAt(0), 0) % COVER_COLORS.length];
-const STATUS = { unread: 'Nepřečteno', reading: 'Čtu', read: 'Přečteno' };
+const STATUS = { unread: 'Nepřečteno', reading: 'Čtu', read: 'Přečteno', paused: 'Odloženo' };
 // Book language (of the edition she owns).
 const LANGS = [['cs', 'Česky'], ['en', 'Anglicky'], ['fr', 'Francouzsky'], ['de', 'Německy'], ['sk', 'Slovensky'], ['es', 'Španělsky'], ['it', 'Italsky']];
 const LANG_NAME = Object.fromEntries(LANGS.map(([k, l]) => [k, l.toLowerCase()]));
@@ -57,7 +57,7 @@ function openAbout() {
     <p class="desc" style="margin-top:12px">${TSUNDOKU_DEF}</p>
     <p class="hint" style="margin-top:14px">Tahle aplikace je pro všechny tvoje hromádky. Ty přečtené, rozečtené i ty, co na tebe teprve čekají.</p></div>`);
 }
-const STATUS_AUDIO = { unread: 'Neposlechnuto', reading: 'Poslouchám', read: 'Poslechnuto' };
+const STATUS_AUDIO = { unread: 'Neposlechnuto', reading: 'Poslouchám', read: 'Poslechnuto', paused: 'Odloženo' };
 const isAudio = (b) => b.format === 'audio';
 const statusMap = (audio) => (audio ? STATUS_AUDIO : STATUS);
 const statusLabel = (b) => statusMap(isAudio(b))[b.status];
@@ -482,7 +482,7 @@ const prefs = (() => { try { return { layout: 'grid', sort: 'added', ...JSON.par
 const savePrefs = () => { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (e) {} };
 // Per-screen state: search text, status filter, genre.
 const UI = { library: { q: '', filter: 'all', genre: '', format: 'book', lang: '' }, wishlist: { q: '', filter: 'all', genre: '', format: 'all', lang: '' }, friend: { q: '', filter: 'all', genre: '', format: 'book', lang: '' } };
-const filtersFor = (audio) => [['all', 'Vše'], ['read', audio ? 'Poslechnuto' : 'Přečteno'], ['reading', audio ? 'Poslouchám' : 'Čtu'], ['unread', audio ? 'Neposlechnuto' : 'Nepřečteno'], ['loaned', 'Půjčené']];
+const filtersFor = (audio) => [['all', 'Vše'], ['read', audio ? 'Poslechnuto' : 'Přečteno'], ['reading', audio ? 'Poslouchám' : 'Čtu'], ['unread', audio ? 'Neposlechnuto' : 'Nepřečteno'], ['paused', 'Odloženo'], ['loaned', 'Půjčené']];
 const SORTS = [['added', 'Nejnovější'], ['title', 'Název A–Z'], ['author', 'Autor A–Z']];
 // Surname of the FIRST author, ignoring notes in brackets, co-authors, translators and "& kol.".
 function surnameOf(a) {
@@ -524,7 +524,7 @@ function booksHtml(list, own = true) {
       <div class="thumb">${coverHtml(b)}</div>
       <div class="grow"><b>${esc(b.title)}</b><span>${esc([b.author, b.year].filter(Boolean).join(' · '))}</span>
         <div class="meta">${b.rating ? `<span class="stars">${starsTxt(b.rating)}</span>` : ''}${b.language && b.language !== 'cs' ? `<span class="lang">${b.language.toUpperCase()}</span>` : ''}
-          ${b.list === 'library' ? `<span class="pill sm">${statusLabel(b)}</span>` : ''}
+          ${b.list === 'library' ? `<span class="pill sm st-${b.status}">${statusLabel(b)}</span>` : ''}
           ${b.loan_type ? `<span class="pill sm wine">${esc(loanText(b))}</span>` : ''}
           ${(b.tags || []).slice(0, 3).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div></div></button>${swipeable(b) ? '</div>' : ''}`).join('')}</div>
       ${list.some(swipeable) && !hintSeen() ? '<p class="hint" style="text-align:center">Tip: posuň knihu prstem doleva a rychle ji označíš jako Čtu nebo Přečteno.</p>' : ''}`;
@@ -849,7 +849,7 @@ async function openBook(id, own) {
     <div class="detail"><div id="dcv">${coverHtml(b)}${b.cover_is_original && safeUrl(b.cover_url) ? '<p class="cover-note">Obálka originálu</p>' : ''}</div><div><h2>${esc(b.title)}</h2><p class="sub">${esc([b.author, b.year].filter(Boolean).join(' · '))}</p>
       ${meta ? `<p class="sub" style="font-size:12px">${esc(meta)}</p>` : ''}
       ${b.rating ? `<div class="stars" style="font-size:18px">${starsTxt(b.rating)}</div>` : ''}
-      <span class="pill ${b.list === 'wishlist' ? 'wine' : ''}">${b.list === 'wishlist' ? 'Wishlist' : statusLabel(b)}</span>${isAudio(b) ? '<span class="pill">Audiokniha</span>' : ''}
+      <span class="pill ${b.list === 'wishlist' ? 'wine' : 'st-' + b.status}">${b.list === 'wishlist' ? 'Wishlist' : statusLabel(b)}</span>${isAudio(b) ? '<span class="pill">Audiokniha</span>' : ''}
       ${b.loan_type ? `<span class="pill wine">${esc(loanText(b))}</span>` : ''}</div></div>
     ${(b.tags || []).length ? `<div class="tags-row">${b.tags.map((t) => `<button class="tag big" data-tag="${esc(t)}">${esc(t)}</button>`).join('')}</div>` : ''}
     ${b.description ? `<label class="f">O čem to je</label><p class="desc">${esc(b.description)}</p>`
@@ -936,7 +936,7 @@ function openEditor(data, isNew = false, photoFile = null) {
       </div>
       <label class="f">Kam</label><div class="seg" id="sl">${['library', 'wishlist'].map((k) => `<button type="button" data-k="${k}" class="${d.list === k ? 'on' : ''}">${k === 'library' ? 'Knihovna' : 'Wishlist'}</button>`).join('')}</div>
       <div id="libonly" ${d.list === 'wishlist' ? 'hidden' : ''}>
-        <label class="f">Stav</label><div class="seg" id="ss">${Object.entries(statusMap(d.format === 'audio')).map(([k, l]) => `<button type="button" data-k="${k}" class="${d.status === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+        <label class="f">Stav</label><div class="seg seg4" id="ss">${Object.entries(statusMap(d.format === 'audio')).map(([k, l]) => `<button type="button" data-k="${k}" class="${d.status === k ? 'on' : ''}">${l}</button>`).join('')}</div>
         <label class="f">Hodnocení</label><div class="rate" id="rt">${[1, 2, 3, 4, 5].map((n) => `<button type="button" data-n="${n}" class="${d.rating >= n ? 'on' : ''}" aria-label="${n} z 5">★</button>`).join('')}</div>
         <label class="f">Půjčování</label><div class="seg" id="ln">${[[null, 'Doma'], ['lent', 'Půjčila jsem'], ['borrowed', 'Vypůjčená']].map(([k, l]) => `<button type="button" data-k="${k || ''}" class="${(d.loan_type || '') === (k || '') ? 'on' : ''}">${l}</button>`).join('')}</div>
         <input class="inp" id="lp" style="margin-top:8px" maxlength="100" value="${esc(d.loan_person || '')}" placeholder="${d.loan_type === 'borrowed' ? 'Od koho' : 'Komu'}" ${d.loan_type ? '' : 'hidden'}>
@@ -1149,7 +1149,7 @@ function openShelfReview(found, unreadable) {
     <p class="hint">Zkontroluj názvy, oprav, co nesedí, a odškrtni, co přidat nechceš.</p>
     <div class="list" id="sh-list" style="margin-top:12px"></div>
     <button class="btn ghost" id="sh-add" style="margin-top:8px">+ Přidat knihu ručně</button>
-    <label class="f">Stav pro všechny</label><div class="seg" id="sh-st">${Object.entries(STATUS).map(([k, l]) => `<button type="button" data-k="${k}" class="${k === status ? 'on' : ''}">${l}</button>`).join('')}</div>
+    <label class="f">Stav pro všechny</label><div class="seg seg4" id="sh-st">${Object.entries(STATUS).map(([k, l]) => `<button type="button" data-k="${k}" class="${k === status ? 'on' : ''}">${l}</button>`).join('')}</div>
     <div class="err" id="sh-err"></div>
     <button class="btn primary" id="sh-save" style="margin-top:8px"></button>`);
   const list = el.querySelector('#sh-list');
