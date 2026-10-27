@@ -117,3 +117,5 @@ a.btn{text-decoration:none;color:inherit}
 .detail .row .btn{flex:1}
 .stack .row{gap:10px}
 .stack .row .btn{flex:1;padding:12px 10px}
+#dcv{width:96px;flex-shrink:0}#dcv .cover{width:100%}
+.cover-note{font-size:11px;color:var(--ink-2);text-align:center;margin-top:4px;line-height:1.2}

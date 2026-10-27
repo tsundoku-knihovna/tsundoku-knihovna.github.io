@@ -49,8 +49,13 @@ function dbkUrl(b) {
   if (/^https:\/\/(www\.)?databazeknih\.cz\//.test(b.dbk_url || '')) return b.dbk_url;
   return 'https://www.databazeknih.cz/search?q=' + encodeURIComponent([b.title, b.author].filter(Boolean).join(' '));
 }
+// Goodreads: for translations search the original title + author (Flynnová → Flynn), so it opens the original book.
 function goodreadsUrl(b) {
-  const q = b.isbn || [b.title, b.author].filter(Boolean).join(' ');
+  let q;
+  if (b.original_title && normT(b.original_title) !== normT(b.title)) {
+    const surname = ((b.author || '').split(/[ ,]+/).filter(Boolean).pop() || '').replace(/ov[áa]$/i, '');
+    q = [b.original_title, surname].filter(Boolean).join(' ');
+  } else q = b.isbn || [b.title, b.author].filter(Boolean).join(' ');
   return 'https://www.goodreads.com/search?q=' + encodeURIComponent(q);
 }
 
@@ -123,6 +128,25 @@ async function findCover(isbn, title, author) {
   } catch (e) {}
   return null;
 }
+// Fallback for translations: the cover of the original (usually English) edition.
+async function findOriginalCover(originalTitle, author) {
+  if (!originalTitle) return null;
+  // Czech feminine surnames: Flynnová → Flynn, Jacksonová → Jackson
+  const last = ((author || '').split(/[ ,]+/).filter(Boolean).pop() || '').replace(/ov[áa]$/i, '');
+  const surname = normT(last).slice(0, 5);
+  try {
+    const hits = await searchBooks([originalTitle, last].filter(Boolean).join(' '));
+    const nt = normT(originalTitle);
+    for (const h of hits) {
+      if (!h.cover_url) continue;
+      const ht = normT(h.title);
+      if (!(ht.startsWith(nt.slice(0, 12)) || nt.startsWith(ht.slice(0, 12)))) continue;
+      if (surname && !normT(h.author).includes(surname)) continue;
+      if (await imgExists(h.cover_url)) return h.cover_url;
+    }
+  } catch (e) {}
+  return null;
+}
 // Fills only what is missing; never overwrites what the user typed. Returns 'ok' or an error code.
 // Free step: Google Books / Open Library fill year, ISBN, publisher and cover without any AI cost.
 async function catalogMatch(b) {
@@ -158,7 +182,14 @@ async function enrichBook(b) {
     if (!b.description && r.description) up.description = r.description;
     if (!b.dbk_url && r.dbk_url) up.dbk_url = r.dbk_url;
   }
-  if (!safeUrl(b.cover_url)) { const c = await findCover(up.isbn || b.isbn, b.title, up.author || b.author); if (c) up.cover_url = c; }
+  if (!safeUrl(b.cover_url)) {
+    const c = await findCover(up.isbn || b.isbn, b.title, up.author || b.author);
+    if (c) { up.cover_url = c; up.cover_is_original = false; }
+    else {
+      const o = await findOriginalCover(up.original_title || b.original_title, up.author || b.author);
+      if (o) { up.cover_url = o; up.cover_is_original = true; }
+    }
+  }
   if (code === 'limit' || code === 'no_key') return code;
   const { error: e2 } = await sb.from('books').update(up).eq('id', b.id);
   if (!e2) Object.assign(b, up);
@@ -518,7 +549,7 @@ async function openBook(id, own) {
   const pending = own && enrichState.ids.has(b.id);
   const meta = [b.publisher, b.original_title && `orig. ${b.original_title}`].filter(Boolean).join(' · ');
   const { el, close } = sheet(`${head('')}
-    <div class="detail"><div id="dcv">${coverHtml(b)}</div><div><h2>${esc(b.title)}</h2><p class="sub">${esc([b.author, b.year].filter(Boolean).join(' · '))}</p>
+    <div class="detail"><div id="dcv">${coverHtml(b)}${b.cover_is_original && safeUrl(b.cover_url) ? '<p class="cover-note">Obálka originálu</p>' : ''}</div><div><h2>${esc(b.title)}</h2><p class="sub">${esc([b.author, b.year].filter(Boolean).join(' · '))}</p>
       ${meta ? `<p class="sub" style="font-size:12px">${esc(meta)}</p>` : ''}
       ${b.rating ? `<div class="stars" style="font-size:18px">${starsTxt(b.rating)}</div>` : ''}
       <span class="pill ${b.list === 'wishlist' ? 'wine' : ''}">${b.list === 'wishlist' ? 'Wishlist' : STATUS[b.status]}</span></div></div>
@@ -555,8 +586,8 @@ async function openBook(id, own) {
       let url = null;
       try { url = await uploadCover(await resizeImage(f, 900)); } catch (e) {}
       if (!url) { cph.disabled = false; return toast('Fotku se nepodařilo nahrát.'); }
-      await sb.from('books').update({ cover_url: url }).eq('id', b.id);
-      b.cover_url = url; close(); render(); openBook(b.id, true); toast('Obálka uložena');
+      await sb.from('books').update({ cover_url: url, cover_is_original: false }).eq('id', b.id);
+      b.cover_url = url; b.cover_is_original = false; close(); render(); openBook(b.id, true); toast('Obálka uložena');
     };
     const mv = el.querySelector('#mv');
     if (mv) mv.onclick = async () => { await sb.from('books').update({ list: 'library' }).eq('id', b.id); await loadBooks(); close(); toast('Přesunuto do knihovny'); render(); };
@@ -564,7 +595,7 @@ async function openBook(id, own) {
     const w = el.querySelector('#want');
     if (w) w.onclick = async () => {
       const { error } = await sb.from('books').insert({ list: 'wishlist', title: b.title, author: b.author, isbn: b.isbn, year: b.year, cover_url: b.cover_url,
-        description: b.description, publisher: b.publisher, original_title: b.original_title, dbk_url: b.dbk_url, enriched_at: b.enriched_at });
+        description: b.description, publisher: b.publisher, cover_is_original: !!b.cover_is_original, original_title: b.original_title, dbk_url: b.dbk_url, enriched_at: b.enriched_at });
       if (error) return toast('Nepodařilo se uložit.');
       await loadBooks(); close(); toast('Přidáno do tvého wishlistu');
     };
@@ -893,18 +924,21 @@ async function boot() {
 async function backfillCovers() {
   const day = new Date().toISOString().slice(0, 10);
   let tried = {};
-  try { tried = JSON.parse(localStorage.getItem('tsundoku_cover_tried') || '{}'); if (tried.day !== day) tried = { day, ids: [] }; } catch (e) { tried = { day, ids: [] }; }
+  try { tried = JSON.parse(localStorage.getItem('tsundoku_cover_tried2') || '{}'); if (tried.day !== day) tried = { day, ids: [] }; } catch (e) { tried = { day, ids: [] }; }
   const todo = S.books.filter((b) => !safeUrl(b.cover_url) && !tried.ids.includes(b.id)).slice(0, 60);
   if (!todo.length) return;
   let changed = 0;
   for (const b of todo) {
     tried.ids.push(b.id);
     try {
+      let up = null;
       const c = await findCover(b.isbn, b.title, b.author);
-      if (c) { const { error } = await sb.from('books').update({ cover_url: c }).eq('id', b.id); if (!error) { b.cover_url = c; changed++; } }
+      if (c) up = { cover_url: c, cover_is_original: false };
+      else { const o = await findOriginalCover(b.original_title, b.author); if (o) up = { cover_url: o, cover_is_original: true }; }
+      if (up) { const { error } = await sb.from('books').update(up).eq('id', b.id); if (!error) { Object.assign(b, up); changed++; } }
     } catch (e) {}
   }
-  try { localStorage.setItem('tsundoku_cover_tried', JSON.stringify(tried)); } catch (e) {}
+  try { localStorage.setItem('tsundoku_cover_tried2', JSON.stringify(tried)); } catch (e) {}
   if (changed && !$sheet.innerHTML) render();
 }
 {
