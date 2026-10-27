@@ -1,5 +1,5 @@
 const SUPABASE_URL = 'https://ukwoxnidopkcpcimhcrc.supabase.co';
-// Google Books key: free (1000 requests/day), restricted to forkitneratovice.github.io and Books API only.
+// Google Books key: free (1000 requests/day), restricted to the app's web address and Books API only.
 const GBOOKS_KEY = 'AIzaSyBMw_pc99KNGulZW7m3Yg-LLSSWTeMd5yE';
 const SUPABASE_KEY = 'sb_publishable_AimfClf0MBCRxMpgUeJD8w_RCiLqG1v';
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
@@ -9,7 +9,7 @@ const $sheet = document.getElementById('sheet-root');
 
 const S = {
   session: null, profile: null, books: [], friendships: [], profilesById: {},
-  view: 'library', filter: 'all', query: '', wishQuery: '',
+  view: 'library',
   friend: null, friendBooks: [], friendTab: 'library', authMode: 'login',
 };
 
@@ -89,7 +89,8 @@ function dbkUrl(b) {
 }
 // Goodreads. Best: a direct book page (gr_url, found via Open Library's Goodreads IDs). Fallback: a search
 // for the ORIGINAL title + author (Czech ISBNs and titles are mostly unknown to Goodreads).
-const grSurname = (a) => ((a || '').split(/[ ,]+/).filter(Boolean).pop() || '').replace(/ov[áa]$/i, '');
+// Surname for catalogue searches; Czech feminine endings dropped (Flynnová → Flynn).
+const grSurname = (a) => surnameOf(a).replace(/ov[áa]$/i, '');
 const isCzIsbn = (i) => /^(97[89])?80/.test(i || '');
 function goodreadsUrl(b) {
   if (/^https:\/\/www\.goodreads\.com\/book\/show\/\d/.test(b.gr_url || '')) return b.gr_url;
@@ -173,11 +174,22 @@ function deepErrorText(code) {
 }
 
 /* ---------- Enrichment: year, ISBN, publisher, plot, cover ---------- */
-const imgExists = (url) => new Promise((res) => {
+// Remember answers for the session, so enrichment does not ask the same catalogue twice.
+// Empty answers are not kept (they may be a network hiccup).
+function remember(fn, keep = (v) => v && (!Array.isArray(v) || v.length)) {
+  const m = new Map();
+  return (k) => {
+    if (m.has(k)) return m.get(k);
+    const p = fn(k).then((v) => { if (!keep(v)) m.delete(k); return v; }, (e) => { m.delete(k); throw e; });
+    m.set(k, p); if (m.size > 300) m.delete(m.keys().next().value);
+    return p;
+  };
+}
+const imgExists = remember((url) => new Promise((res) => {
   if (!url) return res(false);
   const i = new Image(); const t = setTimeout(() => res(false), 8000);
   i.onload = () => { clearTimeout(t); res(i.naturalWidth > 10); }; i.onerror = () => { clearTimeout(t); res(false); }; i.src = url;
-});
+}), () => true);
 async function findCover(isbn, title, author) {
   if (isbn) {
     const hit = await lookupIsbnCatalogs(isbn);
@@ -195,8 +207,7 @@ async function findCover(isbn, title, author) {
 // Fallback for translations: the cover of the original (usually English) edition.
 async function findOriginalCover(originalTitle, author) {
   if (!originalTitle) return null;
-  // Czech feminine surnames: Flynnová → Flynn, Jacksonová → Jackson
-  const last = ((author || '').split(/[ ,]+/).filter(Boolean).pop() || '').replace(/ov[áa]$/i, '');
+  const last = grSurname(author);
   const surname = normT(last).slice(0, 5);
   try {
     const hits = await searchBooks([originalTitle, last].filter(Boolean).join(' '));
@@ -269,7 +280,7 @@ async function enrichBook(b) {
       if (o) { up.cover_url = o; up.cover_is_original = true; }
     }
   }
-  if (!b.gr_url && !up.gr_url) { try { const g = await resolveGoodreads({ ...b, ...up }); if (g) up.gr_url = g; } catch (e) {} }
+  if (!b.gr_url && !up.gr_url && !b.gr_checked_at) { try { const g = await resolveGoodreads({ ...b, ...up }); if (g) up.gr_url = g; up.gr_checked_at = new Date().toISOString(); } catch (e) {} }
   if (code === 'limit' || code === 'no_key') return code;
   const { error: e2 } = await sb.from('books').update(up).eq('id', b.id);
   if (!e2) Object.assign(b, up);
@@ -339,7 +350,7 @@ async function tagMany(books) {
   if (!$sheet.innerHTML) render();
 }
 
-async function lookupIsbnCatalogs(isbn) {
+const lookupIsbnCatalogs = remember(async (isbn) => {
   try {
     const r = await fetch(`https://www.googleapis.com/books/v1/volumes?key=${GBOOKS_KEY}&q=isbn:` + isbn);
     if (r.ok) { const v = (await r.json()).items?.[0]?.volumeInfo; if (v) return fromGoogle(v, isbn); }
@@ -354,7 +365,7 @@ async function lookupIsbnCatalogs(isbn) {
     };
   } catch (e) {}
   return null;
-}
+});
 async function lookupIsbn(isbn, onDeep) {
   isbn = isbn.replace(/[^0-9Xx]/g, '');
   const hit = await lookupIsbnCatalogs(isbn);
@@ -391,7 +402,7 @@ async function searchOpenLibrary(q) {
 }
 const normT = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]/g, '');
 // Fast free search across catalogues (Google Books + Open Library), merged and de-duplicated.
-async function searchBooks(q) {
+const searchBooks = remember(async (q) => {
   const [g, o] = await Promise.allSettled([searchGoogle(q), searchOpenLibrary(q)]);
   const all = [...(g.value || []), ...(o.value || [])];
   const seen = new Set();
@@ -400,7 +411,7 @@ async function searchBooks(q) {
     const k = b.isbn || normT(b.title) + '|' + normT(b.author);
     if (seen.has(k)) return false; seen.add(k); return true;
   }).slice(0, 12);
-}
+});
 
 /* ---------- Auth ---------- */
 function renderForgot(msg = '', ok = false) {
@@ -633,7 +644,7 @@ function booksHtml(list, own = true) {
         <div class="meta">${b.rating ? `<span class="stars">${starsTxt(b.rating)}</span>` : ''}${b.language && b.language !== 'cs' ? `<span class="lang">${b.language.toUpperCase()}</span>` : ''}
           ${b.list === 'library' ? `<span class="pill sm st-${b.status}">${statusLabel(b)}</span>` : ''}
           ${b.list === 'wishlist' && b.wish_top ? '<span class="pill sm gold">★ Nejvíc chci</span>' : ''}${b.loan_type ? `<span class="pill sm wine">${esc(loanText(b))}</span>` : ''}${b._res ? `<span class="pill sm wine">${b._res === 'me' ? 'Zamluvila jsi' : 'Zamluveno'}</span>` : ''}
-          ${(b.tags || []).slice(0, 3).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div></div></button>${swipeable(b) ? '</div>' : ''}`).join('')}</div>
+          ${(b.tags || []).slice(0, 1).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div></div></button>${swipeable(b) ? '</div>' : ''}`).join('')}</div>
       ${list.some(swipeable) && !hintSeen() ? '<p class="hint" style="text-align:center">Tip: posuň knihu prstem doleva a rychle ji označíš jako Čtu nebo Přečteno.</p>' : ''}`;
   }
   return `<div class="grid">${list.map((b) => `<button class="book" data-id="${b.id}" data-own="${own ? 1 : 0}">
@@ -840,9 +851,56 @@ function viewLibrary() {
       <p class="sub">${home} ${plural(home, 'kniha', 'knihy', 'knih')} · <button class="link-sub" id="yearcard">letos ${readYear}${goal ? ` z ${goal}` : ' dočteno'}</button></p></div>
     <div class="top-icons">${lib.length ? `<button class="icon-btn" id="pick" aria-label="Co číst dál?" title="Co číst dál?">${I.dice}</button><button class="icon-btn" id="yearbtn" aria-label="Čtenářský rok" title="Čtenářský rok">${I.chart}</button>` : ''}
       <button class="icon-btn me-btn" id="me" aria-label="Můj profil">${/^https:\/\//.test(S.profile.avatar_url || '') ? `<img src="${esc(S.profile.avatar_url)}" alt="">` : I.user}</button></div></div>
-    ${missingBanner() || tagBanner() || seriesBanner()}
+    ${loanBanner() || missingBanner() || tagBanner() || seriesBanner()}
     ${lib.length ? controlsHtml('library', lib, { placeholder: 'Hledat název, autora, žánr…' })
     : `<div class="empty"><h3>Začni plnit knihovnu</h3><p>Naskenuj čárový kód na zadní straně knihy nebo vyfoť obálku.</p><br><button class="btn primary" data-go="add">${I.scan}Přidat první knihu</button></div>`}`;
+}
+/* ---------- Loan reminders: a book away for 2+ months ---------- */
+const LOAN_REMIND_DAYS = 60;
+const daysSince = (iso) => Math.floor((Date.now() - new Date(iso + 'T00:00:00').getTime()) / 864e5);
+function agoText(iso) {
+  const d = daysSince(iso);
+  if (d <= 0) return 'dnes';
+  if (d === 1) return 'včera';
+  if (d < 14) return `před ${d} dny`;
+  if (d < 60) { const w = Math.round(d / 7); return w === 1 ? 'před týdnem' : `před ${w} týdny`; }
+  const m = Math.round(d / 30.4); return m === 1 ? 'před měsícem' : `před ${m} měsíci`;
+}
+const addDays = (n) => { const t = new Date(); t.setDate(t.getDate() + n); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`; };
+const dueLoans = () => S.books.filter((b) => (b.loan_type === 'lent' || b.loan_type === 'borrowed') && b.loaned_at
+  && daysSince(b.loaned_at) >= LOAN_REMIND_DAYS && (!b.loan_snooze_until || b.loan_snooze_until <= todayISO()));
+function loanBanner() {
+  const due = dueLoans();
+  if (!due.length) return '';
+  const b = due[0];
+  const title = due.length === 1
+    ? (b.loan_type === 'lent' ? `„${b.title}“ se ještě nevrátila` : `„${b.title}“ máš vypůjčenou už dlouho`)
+    : `${due.length} ${plural(due.length, 'půjčená kniha', 'půjčené knihy', 'půjčených knih')} ${due.length < 5 ? 'čekají' : 'čeká'} na vrácení`;
+  const sub = due.length === 1 ? `${loanText(b)} · ${agoText(b.loaned_at)}` : due.slice(0, 2).map((x) => x.title).join(', ') + (due.length > 2 ? '…' : '');
+  return `<div class="card banner loanb"><div class="grow"><b>${esc(title)}</b><span>${esc(sub)}</span></div><button class="mini primary" id="loan-rem">Projít</button></div>`;
+}
+function openLoanReminders() {
+  const { el, close } = sheet(`${head('Půjčené knihy')}<p class="sub" style="margin-bottom:10px">Tyhle knihy jsou pryč déle než 2 měsíce.</p><div class="list" id="lrl"></div>`);
+  const draw = () => {
+    const due = dueLoans();
+    if (!due.length) { close(); render(); return toast('Hotovo, všechno projité'); }
+    el.querySelector('#lrl').innerHTML = due.map((b) => `<div class="li lr"><div class="thumb" style="width:36px">${coverHtml(b)}</div><div class="grow"><b>${esc(b.title)}</b>
+      <span>${esc(loanText(b))} · ${agoText(b.loaned_at)}</span>
+      <div class="row" style="margin-top:6px;gap:6px"><button class="mini primary" data-back="${b.id}">${b.loan_type === 'lent' ? 'Vrátila mi ji' : 'Vrátila jsem ji'}</button>
+      <button class="mini" data-snz="${b.id}">${b.loan_type === 'lent' ? 'Ještě ji má' : 'Ještě ji mám'}</button></div></div></div>`).join('');
+    const act = async (id, up, msg) => {
+      const b = S.books.find((x) => x.id === id);
+      const { error } = await sb.from('books').update(up).eq('id', id);
+      if (error) return toast('Nepodařilo se uložit.');
+      Object.assign(b, up); toast(msg); draw();
+    };
+    el.querySelectorAll('[data-back]').forEach((x) => (x.onclick = () => {
+      const b = S.books.find((y) => y.id === x.dataset.back);
+      act(b.id, b.loan_type === 'lent' ? { loan_type: null, loan_person: null } : { loan_type: 'returned' }, b.loan_type === 'lent' ? 'Kniha je zase doma' : 'Zapsáno jako vrácená');
+    }));
+    el.querySelectorAll('[data-snz]').forEach((x) => (x.onclick = () => act(x.dataset.snz, { loan_snooze_until: addDays(30) }, 'Připomenu za měsíc')));
+  };
+  draw();
 }
 function missingBanner() {
   const miss = S.books.filter((b) => !b.enriched_at && !enrichState.ids.has(b.id));
@@ -923,6 +981,7 @@ function bindView() {
   const yc = document.getElementById('yearcard'); if (yc) yc.onclick = goYear;
   const yb = document.getElementById('yearbtn'); if (yb) yb.onclick = goYear;
   const pk = document.getElementById('pick'); if (pk) pk.onclick = openPick;
+  const lr = document.getElementById('loan-rem'); if (lr) lr.onclick = openLoanReminders;
   const sa = document.getElementById('ser-all'); if (sa) sa.onclick = () => findSeries(S.books.filter((b) => !b.series_checked_at && !b.series_name));
   const sl = document.getElementById('series-btn'); if (sl) sl.onclick = openSeriesList;
   const ta = document.getElementById('tag-all'); if (ta) ta.onclick = () => tagMany(S.books.filter((b) => !b.tagged_at));
@@ -1047,12 +1106,13 @@ async function openBook(id, own) {
   const pending = own && enrichState.ids.has(b.id);
   const meta = [LANG_NAME[b.language || 'cs'], isAudio(b) && b.narrator && `čte ${b.narrator}`, (isAudio(b) || isEbook(b)) && b.audio_source, b.publisher, b.original_title && `orig. ${b.original_title}`].filter(Boolean).join(' · ');
   const { el, close } = sheet(`${head('')}
-    <div class="detail"><div id="dcv">${coverHtml(b)}${b.cover_is_original && safeUrl(b.cover_url) ? '<p class="cover-note">Obálka originálu</p>' : ''}</div><div><h2>${esc(b.title)}</h2><p class="sub">${esc([b.author, b.year].filter(Boolean).join(' · '))}</p>
+    <div class="detail"><div id="dcv">${own ? `<button type="button" class="cover-btn" id="dcvb" aria-label="Změnit obálku">${coverHtml(b)}<span class="cam-badge">${I.camera}</span></button>` : coverHtml(b)}${b.cover_is_original && safeUrl(b.cover_url) ? '<p class="cover-note">Obálka originálu</p>' : ''}</div><div><h2>${esc(b.title)}</h2><p class="sub">${esc([b.author, b.year].filter(Boolean).join(' · '))}</p>
       ${meta ? `<p class="sub" style="font-size:12px">${esc(meta)}</p>` : ''}
       ${b.rating ? `<div class="stars" style="font-size:18px">${starsTxt(b.rating)}</div>` : ''}
       <span class="pill ${b.list === 'wishlist' ? 'wine' : 'st-' + b.status}">${b.list === 'wishlist' ? 'Wishlist' : statusLabel(b)}</span>${b.list === 'wishlist' && b.wish_top ? '<span class="pill gold">★ Nejvíc chci</span>' : ''}${isAudio(b) || isEbook(b) ? `<span class="pill">${fmtOne(b.format)}</span>` : ''}
-      ${b.loan_type ? `<span class="pill wine">${esc(loanText(b))}</span>` : ''}
+      ${b.loan_type ? `<span class="pill wine">${esc(loanText(b))}${b.loaned_at && b.loan_type !== 'returned' ? ' · ' + agoText(b.loaned_at) : ''}</span>` : ''}
       ${finishedText(b) ? `<p class="sub" style="font-size:12px;margin-top:4px">${esc(finishedText(b))}</p>` : ''}</div></div>
+    ${own ? coverPickHtml('dcp', safeUrl(b.cover_url) ? 'Vyměnit obálku za vlastní fotku:' : 'Přidat obálku:') : ''}
     ${b.series_name ? `<button class="ser-line" id="serl">${I.books}<span>${esc(b.series_name)}${b.series_index ? ` · ${String(b.series_index).replace('.0', '').replace('.', ',')}. díl` : ''}</span></button>` : ''}
     ${(b.tags || []).length ? `<div class="tags-row">${b.tags.map((t) => `<button class="tag big" data-tag="${esc(t)}">${esc(t)}</button>`).join('')}</div>` : ''}
     ${b.description ? `<label class="f">O čem to je</label><p class="desc">${esc(b.description)}</p>`
@@ -1063,9 +1123,6 @@ async function openBook(id, own) {
       <div class="row"><a class="btn" id="gr" href="${esc(goodreadsUrl(b))}" target="_blank" rel="noopener">${I.ext}Goodreads</a>
         <a class="btn" href="${esc(dbkUrl(b))}" target="_blank" rel="noopener">${I.ext}Databáze knih</a></div>
       ${own ? `<button class="btn primary" id="ed">${I.edit}Upravit, hodnotit</button>
-        <label class="f" style="margin:4px 0 -4px">${safeUrl(b.cover_url) ? 'Vyměnit obálku za vlastní fotku' : 'Přidat obálku'}</label>
-        <div class="row"><button class="btn" id="cph">${I.camera}Vyfotit</button><button class="btn" id="cgal">${I.image}Z galerie</button></div>
-        <input type="file" id="cph-in" accept="image/*" capture="environment" hidden><input type="file" id="cgal-in" accept="image/*" hidden>
         ${b.list === 'wishlist' ? `<button class="btn ${b.wish_top ? 'gold' : ''}" id="wtop">${b.wish_top ? '★ Nejvíc chci · zrušit' : '☆ Označit: tuhle chci nejvíc'}</button>
         <button class="btn" id="mv">${I.books}Mám ji, přesunout do knihovny</button>` : ''}
         ${b.loan_type === 'borrowed' ? `<button class="btn" id="ret">Vrátila jsem ji (nemám ji doma)</button>` : ''}`
@@ -1079,12 +1136,13 @@ async function openBook(id, own) {
     if (own) S.view = key; else S.friendTab = b.list;
     render(); window.scrollTo(0, 0);
   }));
-  if (!b.gr_url) resolveGoodreads(b).then(async (u) => {
-    if (!u) return;
-    const a = el.querySelector('#gr'); if (a) a.href = u;
-    b.gr_url = u;
-    if (own) await sb.from('books').update({ gr_url: u }).eq('id', b.id);
-  });
+  // Look for the exact Goodreads page only once; if it is not found, the search link stays.
+  if (!b.gr_url && !b.gr_checked_at) resolveGoodreads(b).then(async (u) => {
+    const up = { gr_checked_at: new Date().toISOString(), ...(u ? { gr_url: u } : {}) };
+    if (u) { const a = el.querySelector('#gr'); if (a) a.href = u; }
+    Object.assign(b, up);
+    if (own) await sb.from('books').update(up).eq('id', b.id);
+  }).catch(() => {});
   const serl = el.querySelector('#serl'); if (serl) serl.onclick = () => { if (own) { close(); openSeries(b.series_name); } };
   if (!own) bindFriendBookActions(el, b, close);
   if (own) {
@@ -1098,21 +1156,18 @@ async function openBook(id, own) {
       else if (r !== 'ok') toast('Podrobnosti se nepodařilo najít. Můžeš je doplnit ručně.');
       render(); openBook(b.id, true);
     };
-    const cph = el.querySelector('#cph'), cin = el.querySelector('#cph-in'), cgal = el.querySelector('#cgal'), gin = el.querySelector('#cgal-in');
-    cph.onclick = () => cin.click();
-    cgal.onclick = () => gin.click();
-    const useCover = async (inp, btn) => {
-      const f = inp.files[0]; inp.value = ''; if (!f) return;
-      const label = btn.innerHTML;
-      cph.disabled = cgal.disabled = true; btn.textContent = 'Nahrávám…';
+    const dcp = el.querySelector('#dcp');
+    el.querySelector('#dcvb').onclick = () => { dcp.hidden = !dcp.hidden; };
+    bindCoverPick(dcp, async (f) => {
+      dcp.querySelector('.hint').textContent = 'Nahrávám fotku…';
       let url = null;
       try { url = await uploadCover(await resizeImage(f, 900)); } catch (e) {}
-      if (!url) { cph.disabled = cgal.disabled = false; btn.innerHTML = label; return toast('Fotku se nepodařilo nahrát.'); }
-      await sb.from('books').update({ cover_url: url, cover_is_original: false }).eq('id', b.id);
+      if (!url) return toast('Fotku se nepodařilo nahrát.');
+      const { error } = await sb.from('books').update({ cover_url: url, cover_is_original: false }).eq('id', b.id);
+      if (error) return toast('Obálku se nepodařilo uložit.');
+      removeOwnCover(b.cover_url);
       b.cover_url = url; b.cover_is_original = false; close(); render(); openBook(b.id, true); toast('Obálka uložena');
-    };
-    cin.onchange = () => useCover(cin, cph);
-    gin.onchange = () => useCover(gin, cgal);
+    });
     const mv = el.querySelector('#mv');
     const wt = el.querySelector('#wtop');
     if (wt) wt.onclick = async () => {
@@ -1140,6 +1195,22 @@ async function openBook(id, own) {
   }
 }
 
+// One line saying what is filled in under "Další údaje".
+function moreSummary(d) {
+  return [d.format !== 'book' && fmtOne(d.format), d.year, d.language && d.language !== 'cs' && LANG_NAME[d.language],
+    d.loan_type && loanText(d), (d.tags || []).length && `${d.tags.length} ${plural(d.tags.length, 'žánr', 'žánry', 'žánrů')}`,
+    d.series_name && 'série', d.note && 'poznámka'].filter(Boolean).join(' · ');
+}
+// "Vyfotit / Z galerie" row, hidden until the cover is tapped.
+const coverPickHtml = (id, label) => `<div class="cover-pick" id="${id}" hidden><span class="hint">${esc(label)}</span>
+  <div class="row"><button type="button" class="mini" data-cam>${I.camera}Vyfotit</button><button type="button" class="mini" data-gal>${I.image}Z galerie</button></div>
+  <input type="file" accept="image/*" capture="environment" data-cami hidden><input type="file" accept="image/*" data-gali hidden></div>`;
+function bindCoverPick(box, onFile) {
+  const cam = box.querySelector('[data-cami]'), gal = box.querySelector('[data-gali]');
+  box.querySelector('[data-cam]').onclick = () => cam.click();
+  box.querySelector('[data-gal]').onclick = () => gal.click();
+  [cam, gal].forEach((inp) => (inp.onchange = () => { const f = inp.files[0]; inp.value = ''; if (f) onFile(f); }));
+}
 function openEditor(data, isNew = false, photoFile = null) {
   const d = { list: S.defaultList || 'library', format: S.defaultFormat || 'book', status: 'unread', rating: null, note: '', loan_type: null, loan_person: '', narrator: '', audio_source: '', ...data };
   if (!d.format) d.format = 'book';
@@ -1149,20 +1220,12 @@ function openEditor(data, isNew = false, photoFile = null) {
   const allTags = [...new Set([...GENRES, ...S.books.flatMap((b) => b.tags || [])])].sort(cmpCs);
   const { el, close } = sheet(`${head(isNew ? ({ audio: 'Nová audiokniha', ebook: 'Nová e-kniha' }[d.format] || 'Nová kniha') : ({ audio: 'Upravit audioknihu', ebook: 'Upravit e-knihu' }[d.format] || 'Upravit knihu'))}
     <form id="bf" novalidate>
-      <div class="detail"><div id="cv" style="width:80px;flex-shrink:0">${coverHtml(d)}</div>
+      <div class="detail"><div id="cv" style="width:80px;flex-shrink:0"><button type="button" class="cover-btn" id="cvb" aria-label="Změnit obálku">${coverHtml(d)}<span class="cam-badge">${I.camera}</span></button></div>
         <div style="flex:1;min-width:0"><label class="f" style="margin-top:0" for="bt">Název</label><input class="inp" id="bt" value="${esc(d.title || '')}" maxlength="300">
         <label class="f" for="ba">Autor</label><input class="inp" id="ba" value="${esc(d.author || '')}" maxlength="300"></div></div>
-      <div class="row"><div style="flex:1"><label class="f" for="bi">ISBN</label><input class="inp" id="bi" value="${esc(d.isbn || '')}" inputmode="numeric" maxlength="17"></div>
-        <div style="width:100px"><label class="f" for="by">Rok</label><input class="inp" id="by" value="${esc(d.year || '')}" inputmode="numeric" maxlength="4"></div></div>
-      <label class="f" for="blg">Jazyk</label><select class="sel inp" id="blg">${LANGS.map(([k, l]) => `<option value="${k}" ${d.language === k ? 'selected' : ''}>${l}</option>`).join('')}${LANGS.some(([k]) => k === d.language) ? '' : `<option value="${esc(d.language)}" selected>${esc(d.language)}</option>`}</select>
-      <label class="f">Formát</label><div class="seg" id="sf2">${FORMATS.map(([k, , l]) => `<button type="button" data-k="${k}" class="${d.format === k ? 'on' : ''}">${l}</button>`).join('')}</div>
-      <div id="audioonly" ${d.format === 'book' ? 'hidden' : ''}>
-        <div class="row"><div style="flex:1" id="nrw" ${d.format === 'audio' ? '' : 'hidden'}><label class="f" for="bnr">Čte</label><input class="inp" id="bnr" maxlength="200" value="${esc(d.narrator || '')}" placeholder="Kdo audioknihu načetl"></div>
-        <div style="flex:1"><label class="f" for="bas">Kde ji mám</label><input class="inp" id="bas" list="as-list" maxlength="60" value="${esc(d.audio_source || '')}" placeholder="${d.format === 'ebook' ? 'Kindle, Palmknihy…' : 'Audiolibrix, Storytel…'}"></div></div>
-        <datalist id="as-list"></datalist>
-      </div>
+      ${coverPickHtml('ecp', 'Obálka z tvé fotky:')}
       <label class="f">Kam</label><div class="seg" id="sl">${['library', 'wishlist'].map((k) => `<button type="button" data-k="${k}" class="${d.list === k ? 'on' : ''}">${k === 'library' ? 'Knihovna' : 'Wishlist'}</button>`).join('')}</div>
-      <div id="libonly" ${d.list === 'wishlist' ? 'hidden' : ''}>
+      <div id="libonly" class="libonly" ${d.list === 'wishlist' ? 'hidden' : ''}>
         <label class="f">Stav</label><div class="seg seg4" id="ss">${Object.entries(statusMap(d.format === 'audio')).map(([k, l]) => `<button type="button" data-k="${k}" class="${d.status === k ? 'on' : ''}">${l}</button>`).join('')}</div>
         <label class="f">Hodnocení</label><div class="rate" id="rt">${[1, 2, 3, 4, 5].map((n) => `<button type="button" data-n="${n}" class="${d.rating >= n ? 'on' : ''}" aria-label="${n} z 5">★</button>`).join('')}</div>
         <div id="finw" ${d.status === 'read' ? '' : 'hidden'}>
@@ -1170,9 +1233,24 @@ function openEditor(data, isNew = false, photoFile = null) {
           <input class="inp" type="date" id="fdate" style="margin-top:8px" max="${todayISO()}" value="${fp === 'day' && d.finished_at ? d.finished_at : todayISO()}" ${fp === 'day' ? '' : 'hidden'}>
           <select class="sel inp" id="fyear" style="margin-top:8px" ${fp === 'year' ? '' : 'hidden'}>${Array.from({ length: new Date().getFullYear() - 1949 }, (_, i) => new Date().getFullYear() - i).map((y) => `<option ${d.finished_at && +d.finished_at.slice(0, 4) === y ? 'selected' : ''}>${y}</option>`).join('')}</select>
         </div>
+      </div>
+      <details class="more" id="more">
+        <summary><b>Další údaje</b><span>${esc(moreSummary(d) || 'formát, ISBN, rok, jazyk, půjčování, žánry, série, poznámka')}</span></summary>
+      <label class="f">Formát</label><div class="seg" id="sf2">${FORMATS.map(([k, , l]) => `<button type="button" data-k="${k}" class="${d.format === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+      <div id="audioonly" ${d.format === 'book' ? 'hidden' : ''}>
+        <div class="row"><div style="flex:1" id="nrw" ${d.format === 'audio' ? '' : 'hidden'}><label class="f" for="bnr">Čte</label><input class="inp" id="bnr" maxlength="200" value="${esc(d.narrator || '')}" placeholder="Kdo audioknihu načetl"></div>
+        <div style="flex:1"><label class="f" for="bas">Kde ji mám</label><input class="inp" id="bas" list="as-list" maxlength="60" value="${esc(d.audio_source || '')}" placeholder="${d.format === 'ebook' ? 'Kindle, Palmknihy…' : 'Audiolibrix, Storytel…'}"></div></div>
+        <datalist id="as-list"></datalist>
+      </div>
+      <div class="row"><div style="flex:1"><label class="f" for="bi">ISBN</label><input class="inp" id="bi" value="${esc(d.isbn || '')}" inputmode="numeric" maxlength="17"></div>
+        <div style="width:100px"><label class="f" for="by">Rok</label><input class="inp" id="by" value="${esc(d.year || '')}" inputmode="numeric" maxlength="4"></div></div>
+      <label class="f" for="blg">Jazyk</label><select class="sel inp" id="blg">${LANGS.map(([k, l]) => `<option value="${k}" ${d.language === k ? 'selected' : ''}>${l}</option>`).join('')}${LANGS.some(([k]) => k === d.language) ? '' : `<option value="${esc(d.language)}" selected>${esc(d.language)}</option>`}</select>
+      <div class="libonly" ${d.list === 'wishlist' ? 'hidden' : ''}>
         <label class="f">Půjčování</label><div class="seg seg4" id="ln">${[[null, 'Doma'], ['lent', 'Půjčila jsem'], ['borrowed', 'Vypůjčená'], ['returned', 'Vrátila jsem']].map(([k, l]) => `<button type="button" data-k="${k || ''}" class="${(d.loan_type || '') === (k || '') ? 'on' : ''}">${l}</button>`).join('')}</div>
-        <input class="inp" id="lp" style="margin-top:8px" maxlength="100" value="${esc(d.loan_person || '')}" placeholder="${d.loan_type === 'lent' ? 'Komu' : 'Od koho'}" ${d.loan_type ? '' : 'hidden'}>
+        <div class="row" id="lpw" style="margin-top:8px" ${d.loan_type ? '' : 'hidden'}><input class="inp" id="lp" style="flex:1" maxlength="100" value="${esc(d.loan_person || '')}" placeholder="${d.loan_type === 'lent' ? 'Komu' : 'Od koho'}">
+          <input class="inp" type="date" id="lda" style="width:auto" max="${todayISO()}" value="${d.loaned_at || todayISO()}" aria-label="Od kdy" ${d.loan_type === 'returned' ? 'hidden' : ''}></div>
         <p class="hint" id="lnh" ${d.loan_type === 'returned' ? '' : 'hidden'}>Četla jsi půjčenou a už ji nemáš. V knihovně ji najdeš přes hledání nebo filtr Nemám doma, do statistik se počítá.</p>
+        <p class="hint" id="lnr" ${d.loan_type === 'lent' || d.loan_type === 'borrowed' ? '' : 'hidden'}>Když se kniha do 2 měsíců nevrátí, aplikace ti připomene.</p>
       </div>
       <label class="f">Žánry</label><div class="tags-edit" id="tg"></div>
       <div class="row" style="margin-top:6px"><input class="inp" id="tgi" list="tg-list" placeholder="Přidat žánr" maxlength="40"><button type="button" class="mini" id="tga" style="padding:10px 14px">Přidat</button></div>
@@ -1186,12 +1264,13 @@ function openEditor(data, isNew = false, photoFile = null) {
         <button type="button" class="mini" id="dse" style="margin-top:10px">${I.edit} ${d.description ? 'Upravit text' : 'Napsat popis'}</button></div>
       <div id="dsw" hidden><textarea class="inp" id="bds" maxlength="3000" rows="6" placeholder="O čem kniha je">${esc(d.description || '')}</textarea>
         <div class="row" style="margin-top:6px;justify-content:space-between"><span class="hint" style="margin:0">Uloží se tlačítkem Uložit změny.</span><button type="button" class="mini" id="dsx">Zrušit úpravu</button></div></div>`}
+      </details>
       ${photoFile && !safeUrl(d.cover_url) ? `<p class="hint">Jako obálku použijeme tvoji fotku.</p>` : ''}
       <div class="err" id="berr"></div>
       <div class="stack" style="margin-top:8px"><button class="btn primary" type="submit" id="bsave">${isNew ? (d.list === 'wishlist' ? 'Uložit do wishlistu' : 'Uložit do knihovny') : 'Uložit změny'}</button>
       ${!isNew ? `<button type="button" class="btn danger" id="bd">Smazat knihu</button>` : ''}</div>
     </form>`);
-  el.querySelectorAll('#sl button').forEach((b) => (b.onclick = () => { d.list = b.dataset.k; el.querySelectorAll('#sl button').forEach((x) => x.classList.toggle('on', x === b)); el.querySelector('#libonly').hidden = d.list === 'wishlist'; if (isNew) el.querySelector('#bsave').textContent = d.list === 'wishlist' ? 'Uložit do wishlistu' : 'Uložit do knihovny'; }));
+  el.querySelectorAll('#sl button').forEach((b) => (b.onclick = () => { d.list = b.dataset.k; el.querySelectorAll('#sl button').forEach((x) => x.classList.toggle('on', x === b)); el.querySelectorAll('.libonly').forEach((x) => (x.hidden = d.list === 'wishlist')); if (isNew) el.querySelector('#bsave').textContent = d.list === 'wishlist' ? 'Uložit do wishlistu' : 'Uložit do knihovny'; }));
   el.querySelectorAll('#ss button').forEach((b) => (b.onclick = () => { d.status = b.dataset.k; el.querySelectorAll('#ss button').forEach((x) => x.classList.toggle('on', x === b)); el.querySelector('#finw').hidden = d.status !== 'read'; }));
   el.querySelectorAll('#fpw button').forEach((b) => (b.onclick = () => {
     fp = b.dataset.k; el.querySelectorAll('#fpw button').forEach((x) => x.classList.toggle('on', x === b));
@@ -1217,10 +1296,24 @@ function openEditor(data, isNew = false, photoFile = null) {
     dse.onclick = () => { dsv.hidden = true; dsw.hidden = false; d.descEditing = true; bds.focus(); };
     el.querySelector('#dsx').onclick = () => { bds.value = d.description || ''; dsw.hidden = true; dsv.hidden = false; d.descEditing = false; };
   }
+  let newCover = null;
+  const ecp = el.querySelector('#ecp');
+  el.querySelector('#cvb').onclick = () => { ecp.hidden = !ecp.hidden; };
+  bindCoverPick(ecp, async (f) => {
+    try { newCover = await resizeImage(f, 900); } catch (e) { return toast('Fotku se nepodařilo načíst.'); }
+    const img = el.querySelector('#cvb .cover');
+    img.className = 'cover has-img'; img.style.background = '';
+    img.innerHTML = `<img src="${URL.createObjectURL(newCover)}" alt="">`;
+    ecp.hidden = true; toast('Obálka se uloží s knihou');
+  });
   const lp = el.querySelector('#lp');
   el.querySelectorAll('#ln button').forEach((b) => (b.onclick = () => {
     d.loan_type = b.dataset.k || null; el.querySelectorAll('#ln button').forEach((x) => x.classList.toggle('on', x === b));
-    lp.hidden = !d.loan_type; lp.placeholder = d.loan_type === 'lent' ? 'Komu' : 'Od koho'; el.querySelector('#lnh').hidden = d.loan_type !== 'returned'; if (d.loan_type) lp.focus();
+    el.querySelector('#lpw').hidden = !d.loan_type; lp.placeholder = d.loan_type === 'lent' ? 'Komu' : 'Od koho';
+    el.querySelector('#lda').hidden = d.loan_type === 'returned';
+    el.querySelector('#lnh').hidden = d.loan_type !== 'returned';
+    el.querySelector('#lnr').hidden = !(d.loan_type === 'lent' || d.loan_type === 'borrowed');
+    if (d.loan_type) lp.focus();
   }));
   const tg = el.querySelector('#tg'), tgi = el.querySelector('#tgi');
   const drawTags = () => {
@@ -1242,7 +1335,9 @@ function openEditor(data, isNew = false, photoFile = null) {
   const del = el.querySelector('#bd');
   if (del) del.onclick = async () => {
     if (!confirm('Opravdu smazat „' + d.title + '“?')) return;
-    await sb.from('books').delete().eq('id', d.id); await loadBooks(); close(); toast('Smazáno'); render();
+    const { error } = await sb.from('books').delete().eq('id', d.id);
+    if (error) return toast('Nepodařilo se smazat.');
+    removeOwnCover(d.cover_url); await loadBooks(); close(); toast('Smazáno'); render();
   };
   el.querySelector('#bf').onsubmit = async (e) => {
     e.preventDefault();
@@ -1254,14 +1349,17 @@ function openEditor(data, isNew = false, photoFile = null) {
     if (isbn && !/^[0-9Xx]{10,13}$/.test(isbn)) return (err.textContent = 'ISBN má mít 10 nebo 13 číslic.');
     if (yearS && !/^\d{3,4}$/.test(yearS)) return (err.textContent = 'Rok zadej jako číslo, třeba 1924.');
     const btn = e.target.querySelector('button[type=submit]'); btn.disabled = true;
-    let cover_url = safeUrl(d.cover_url) || null;
-    if (!cover_url && photoFile) cover_url = await uploadCover(photoFile);
+    let cover_url = safeUrl(d.cover_url) || null, coverOwn = null;
+    if (newCover) { const u = await uploadCover(newCover); if (u) { coverOwn = cover_url; cover_url = u; } else toast('Obálku se nepodařilo nahrát.'); }
+    else if (!cover_url && photoFile) cover_url = await uploadCover(photoFile);
     const row = {
       title, author: el.querySelector('#ba').value.trim() || null, isbn: isbn || null, year: yearS ? +yearS : null,
       list: d.list, status: d.list === 'wishlist' ? 'unread' : d.status, rating: d.list === 'wishlist' ? null : d.rating,
       note: el.querySelector('#bn').value.trim() || null, cover_url,
       ...(d.descEditing ? { description: el.querySelector('#bds').value.trim() || null } : {}),
       loan_type: d.list === 'wishlist' ? null : d.loan_type, loan_person: d.list === 'wishlist' || !d.loan_type ? null : (lp.value.trim() || null),
+      ...(d.list !== 'wishlist' && (d.loan_type === 'lent' || d.loan_type === 'borrowed') && /^\d{4}-\d{2}-\d{2}$/.test(el.querySelector('#lda').value) ? { loaned_at: el.querySelector('#lda').value } : {}),
+      ...(newCover && cover_url !== safeUrl(d.cover_url) ? { cover_is_original: false } : {}),
       tags: d.tags, format: d.format, language: el.querySelector('#blg').value || null,
       narrator: d.format === 'audio' ? (el.querySelector('#bnr').value.trim() || null) : null,
       audio_source: d.format !== 'book' ? (el.querySelector('#bas').value.trim() || null) : null,
@@ -1282,6 +1380,7 @@ function openEditor(data, isNew = false, photoFile = null) {
     const { data: saved, error } = isNew ? await sb.from('books').insert(row).select() : await sb.from('books').update(row).eq('id', d.id).select();
     btn.disabled = false;
     if (error) return (err.textContent = 'Nepodařilo se uložit. Zkus to znovu.');
+    if (coverOwn) removeOwnCover(coverOwn);
     await loadBooks(); close();
     toast(isNew ? (row.list === 'wishlist' ? 'Přidáno do wishlistu' : row.format === 'audio' ? 'Audiokniha je v knihovně' : row.format === 'ebook' ? 'E-kniha je v knihovně' : 'Kniha je v knihovně') : 'Uloženo');
     if (isNew) { S.view = row.list === 'wishlist' ? 'wishlist' : 'library'; if (row.list === 'library') UI.library.format = row.format; }
@@ -1323,10 +1422,9 @@ function loadingSheet(text) {
   return s;
 }
 const DEEP_MSG = 'V katalozích nic. Hledám důkladně na internetu, i v českých databázích (asi 10 s)…';
-const LANG = { cs: 'česky', en: 'anglicky', fr: 'francouzsky', de: 'německy', sk: 'slovensky' };
 function resultRows(items) {
   return `<div class="list results">${items.map((b, i) => `<div class="li" data-i="${i}">${coverHtml(b)}<div class="grow"><b>${esc(b.title)}</b>
-    <span>${esc([b.author, b.year, b.publisher, LANG[b.language]].filter(Boolean).join(' · '))}</span></div></div>`).join('')}</div>`;
+    <span>${esc([b.author, b.year, b.publisher, LANG_NAME[b.language]].filter(Boolean).join(' · '))}</span></div></div>`).join('')}</div>`;
 }
 async function handleIsbn(isbn) {
   const ld = loadingSheet('Hledám knihu…');
@@ -1486,6 +1584,12 @@ function openShelfReview(found, unreadable, mode = 'shelf', source = null) {
   };
 }
 
+// Our own cover photos live in Storage; drop the file when it is replaced or the book is deleted.
+const ownCoverPath = (url) => (url || '').split('/storage/v1/object/public/covers/')[1] || null;
+function removeOwnCover(url) {
+  const p = ownCoverPath(url);
+  if (p && p.startsWith(me() + '/')) sb.storage.from('covers').remove([p]).catch(() => {});
+}
 async function uploadCover(blob) {
   const path = `${me()}/${crypto.randomUUID()}.jpg`;
   const { error } = await sb.storage.from('covers').upload(path, blob, { contentType: 'image/jpeg' });
@@ -1569,6 +1673,17 @@ function favsHtml(f, books, own) {
   if (!out.length) return own ? `<div class="card fav-empty"><b>Ukaž přátelům, co máš ráda</b><span>Nejoblíbenější kniha, série, autor, citát… Vyplníš jen to, co chceš.</span></div>` : '';
   return `<div class="favs">${out.join('')}</div>`;
 }
+/* ---------- Appearance: light / dark / follow the phone ---------- */
+const THEME_KEY = 'tsundoku_theme';
+const getTheme = () => { try { return localStorage.getItem(THEME_KEY) || 'auto'; } catch (e) { return 'auto'; } };
+function applyTheme(t) {
+  if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme;
+  const dark = t === 'dark' || (t !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+  const m = document.querySelector('meta[name="theme-color"]'); if (m) m.content = dark ? '#1B1916' : '#2F4A3A';
+}
+function setTheme(t) { try { localStorage.setItem(THEME_KEY, t); } catch (e) {} applyTheme(t); }
+applyTheme(getTheme());
+try { matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => applyTheme(getTheme())); } catch (e) {}
 function viewProfile() {
   const p = S.profile;
   const lib = S.books.filter((b) => b.list === 'library');
@@ -1584,6 +1699,8 @@ function viewProfile() {
     </div>
     ${favsHtml(S.favs || {}, S.books, true)}
     <button class="btn primary" id="pedit" style="margin-top:14px">${I.edit}Upravit profil</button>
+    <h2>Vzhled</h2>
+    <div class="seg" id="theme">${[['auto', 'Podle telefonu'], ['light', 'Světlý'], ['dark', 'Tmavý']].map(([k, l]) => `<button type="button" data-th="${k}" class="${getTheme() === k ? 'on' : ''}">${l}</button>`).join('')}</div>
     <h2>Účet</h2>
     <div class="list acts">
       <button class="li" id="ppw">Změnit heslo</button>
@@ -1594,6 +1711,7 @@ function viewProfile() {
     <button class="btn danger" id="plo" style="margin-top:12px">${I.logout}Odhlásit se</button>`;
 }
 function bindProfile() {
+  $app.querySelectorAll('[data-th]').forEach((b) => (b.onclick = () => { setTheme(b.dataset.th); $app.querySelectorAll('[data-th]').forEach((x) => x.classList.toggle('on', x === b)); }));
   const pin = document.getElementById('pav-in');
   document.getElementById('pav').onclick = () => pin.click();
   pin.onchange = async () => { const f = pin.files[0]; pin.value = ''; if (f) { await setAvatar(f); render(); } };
@@ -1874,7 +1992,7 @@ function viewYear() {
       ${goal ? `<div class="bar big"><i style="width:${pct}%"></i></div><p class="sub" style="margin-top:6px">${pct} % · ${paceText(books.length, goal, y)}</p>` : ''}
     </div>
     <h3 class="st-h">Po měsících</h3>
-    <div class="months">${byMonth.map((m, i) => `<div class="mcol"><div class="mbar"><i style="height:${Math.round((m.length / max) * 100)}%"></i></div><b>${m.length || ''}</b><span>${MONTHS_SHORT[i]}</span></div>`).join('')}</div>
+    <div class="months">${byMonth.map((m, i) => `<button type="button" class="mcol" data-mi="${i}" ${m.length ? '' : 'disabled'} aria-label="${MONTHS[i]}"><div class="mbar"><i style="height:${Math.round((m.length / max) * 100)}%"></i></div><b>${m.length || ''}</b><span>${MONTHS_SHORT[i]}</span></button>`).join('')}</div>
     ${yearOnly.length ? `<p class="hint">+ ${yearOnly.length} ${plural(yearOnly.length, 'kniha', 'knihy', 'knih')} jen s rokem, bez měsíce.</p>` : ''}
     <div class="stats">
       <div><b>${books.length}</b><span>dočteno</span></div>
@@ -1883,13 +2001,18 @@ function viewYear() {
     </div>
     ${best ? `<h3 class="st-h">Nejlepší kniha roku</h3><div class="list">${bookRow(best)}</div>` : ''}
     ${statRow('Nejčastější žánry', genres)}${statRow('Nejčastější autoři', authors)}${statRow('Formáty', fmts)}${statRow('Jazyky', langs)}
-    ${books.length ? `<h3 class="st-h">Dočtené knihy</h3>${byMonth.map((m, i) => (m.length ? `<p class="mhead">${MONTHS[i]}</p><div class="list">${m.map(bookRow).join('')}</div>` : '')).reverse().join('')}
-      ${yearOnly.length ? `<p class="mhead">během roku</p><div class="list">${yearOnly.map(bookRow).join('')}</div>` : ''}`
+    ${books.length ? `<h3 class="st-h">Dočtené knihy</h3><p class="hint" style="margin:-4px 0 8px">Klepni na měsíc (nebo na sloupec v grafu).</p>
+      ${byMonth.map((m, i) => (m.length ? `<details class="mdet" id="mdet-${i}"><summary><span>${MONTHS[i]}</span><span class="n">${m.length}</span></summary><div class="list">${m.map(bookRow).join('')}</div></details>` : '')).reverse().join('')}
+      ${yearOnly.length ? `<details class="mdet"><summary><span>během roku</span><span class="n">${yearOnly.length}</span></summary><div class="list">${yearOnly.map(bookRow).join('')}</div></details>` : ''}`
     : `<div class="empty">V roce ${y} zatím nic dočteného. Až knihu označíš jako přečtenou, objeví se tady.</div>`}`;
 }
 function bindYear() {
   const bl = document.getElementById('back-lib'); if (bl) bl.onclick = () => goBack(() => { S.view = 'library'; render(); window.scrollTo(0, 0); });
   $app.querySelectorAll('[data-year]').forEach((b) => (b.onclick = () => { S.statYear = +b.dataset.year; render(); }));
+  $app.querySelectorAll('[data-mi]').forEach((b) => (b.onclick = () => {
+    const d = document.getElementById('mdet-' + b.dataset.mi); if (!d) return;
+    d.open = true; d.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }));
   const sg = document.getElementById('set-goal'); if (sg) sg.onclick = openGoal;
   const fd = document.getElementById('fill-dates'); if (fd) fd.onclick = openFillDates;
   $app.querySelectorAll('.book').forEach((b) => (b.onclick = () => openBook(b.dataset.id, true)));

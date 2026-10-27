@@ -328,3 +328,53 @@ select.sel.inp{width:100%;flex:none;padding:10px 32px 10px 12px;font-size:16px}
 .fav-pick .fav-cur + .fav-cur,.fav-pick .fav-cur + .mini,.fav-pick .fav-cur + .hint{margin-top:6px}
 .gal-link{display:flex;align-items:center;gap:6px;margin:12px auto 0}
 .gal-link svg{width:16px;height:16px;flex-shrink:0}
+
+/* v29: colours as variables (light + dark), folded editor, cover picker, loan reminders */
+:root{--on-accent:var(--paper);--cover-ink:#F6F0E4;--tag-bg:#EFE6D5;--tag-ink:#6B5B4B;--amber-bg:#F5ECD3;--amber-ink:#7A5B12;--muted-bg:#ECE7DF;--lang-bg:#E4E1F0;--lang-ink:#4B437A;--overlay:rgba(43,38,34,.45);color-scheme:light}
+:root[data-theme=dark]{--paper:#1B1916;--paper-2:#24211D;--line:#37322C;--line-2:#4A433B;--ink:#ECE5D8;--ink-2:#A69B8C;--green:#9CC2A8;--green-soft:#26352C;--wine:#E39484;--wine-soft:#3B2622;--gold:#D9B65F;--tag-bg:#2F2A24;--tag-ink:#CDBFA8;--amber-bg:#3A3120;--amber-ink:#E8C873;--muted-bg:#2E2A25;--lang-bg:#2C2A3B;--lang-ink:#BDB4EC;--overlay:rgba(0,0,0,.6);color-scheme:dark}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--paper:#1B1916;--paper-2:#24211D;--line:#37322C;--line-2:#4A433B;--ink:#ECE5D8;--ink-2:#A69B8C;--green:#9CC2A8;--green-soft:#26352C;--wine:#E39484;--wine-soft:#3B2622;--gold:#D9B65F;--tag-bg:#2F2A24;--tag-ink:#CDBFA8;--amber-bg:#3A3120;--amber-ink:#E8C873;--muted-bg:#2E2A25;--lang-bg:#2C2A3B;--lang-ink:#BDB4EC;--overlay:rgba(0,0,0,.6);color-scheme:dark}}
+.cover{color:var(--cover-ink)}
+.tag{background:var(--tag-bg);color:var(--tag-ink)}
+.tag.big button{color:var(--tag-ink)}
+.pill.st-paused{background:var(--muted-bg);color:var(--ink-2)}
+.pill.st-reading,.pill.gold{background:var(--amber-bg);color:var(--amber-ink)}
+.btn.gold{background:var(--amber-bg);color:var(--amber-ink)}
+.book .wtop{color:var(--amber-ink)}
+.lang{background:var(--lang-bg);color:var(--lang-ink)}
+.sheet-bg{background:var(--overlay)}
+.badge,.badge-n,.sw-btn{color:var(--on-accent)}
+.sw-btn.st-reading{color:#3D2E0A}
+/* tap the cover to change it */
+.cover-btn{position:relative;display:block;width:100%;padding:0;text-align:left}
+.cover-btn .cover{width:100%}
+.cam-badge{position:absolute;right:4px;bottom:4px;width:26px;height:26px;border-radius:50%;background:var(--paper-2);color:var(--ink);border:1px solid var(--line-2);display:flex;align-items:center;justify-content:center}
+.cam-badge svg{width:14px;height:14px}
+.cover-pick{margin:2px 0 10px}
+.cover-pick .hint{display:block;margin:0 0 6px}
+.cover-pick .row{gap:8px}
+.cover-pick .mini{display:inline-flex;align-items:center;gap:6px}
+.cover-pick .mini svg{width:15px;height:15px}
+/* editor: folded extra fields */
+details.more{margin-top:16px;border:1px solid var(--line);border-radius:12px;background:var(--paper-2);padding:0 14px}
+details.more>summary{list-style:none;cursor:pointer;padding:12px 0;display:flex;flex-direction:column;gap:2px}
+details.more>summary::-webkit-details-marker{display:none}
+details.more>summary b{font-weight:600;display:flex;align-items:center;gap:6px}
+details.more>summary b::after{content:'›';font-size:20px;line-height:1;color:var(--ink-2);transition:transform .15s}
+details.more[open]>summary b::after{transform:rotate(90deg)}
+details.more>summary span{font-size:13px;color:var(--ink-2)}
+details.more[open]{padding-bottom:14px}
+details.more .inp,details.more .sel{background:var(--paper)}
+/* reading year: folded months */
+button.mcol{background:none;border:0;padding:0;cursor:pointer}
+button.mcol[disabled]{cursor:default}
+.mdet{border:1px solid var(--line);border-radius:12px;background:var(--paper-2);margin-bottom:8px;overflow:hidden}
+.mdet>summary{list-style:none;display:flex;justify-content:space-between;align-items:center;padding:11px 14px;cursor:pointer;text-transform:capitalize;font-weight:500}
+.mdet>summary::-webkit-details-marker{display:none}
+.mdet>summary .n{font-size:13px;color:var(--ink-2);text-transform:none}
+.mdet>summary .n::after{content:' ›';display:inline-block;margin-left:4px;transition:transform .15s}
+.mdet[open]>summary .n::after{transform:rotate(90deg)}
+.mdet .list{border:0;border-top:1px solid var(--line);border-radius:0}
+/* loan reminder */
+.banner.loanb{background:var(--amber-bg);border-color:var(--amber-bg)}
+.li.lr{align-items:flex-start}
+.li .thumb .cover{border-radius:3px}
