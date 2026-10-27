@@ -266,3 +266,17 @@ select.sel.inp{width:100%;flex:none;padding:10px 32px 10px 12px;font-size:16px}
 .res-card span{font-size:13px;color:var(--ink-2)}
 .res-card .mini{justify-self:start;margin-top:4px}
 .li.book{display:flex;align-items:center}.li.book .grow{min-width:0}
+/* compact library header + filters */
+.top-icons{display:flex;gap:8px;flex-shrink:0}
+.link-sub{color:var(--green);font-size:14px;text-decoration:underline;text-decoration-color:var(--line-2);text-underline-offset:3px}
+.searchrow{display:flex;gap:8px;align-items:center;margin-bottom:12px}
+.searchrow .searchbox{flex:1;margin:0}
+.filter-btn{position:relative;width:46px;height:46px;border-radius:10px;border:1px solid var(--line);background:var(--paper-2);display:flex;align-items:center;justify-content:center;flex-shrink:0;color:var(--ink)}
+.filter-btn svg{width:22px;height:22px}
+.filter-btn.on{background:var(--green);color:var(--paper);border-color:var(--green)}
+.badge-n{position:absolute;top:-6px;right:-6px;min-width:18px;height:18px;border-radius:9px;background:var(--wine);color:#fff;font-size:11px;display:flex;align-items:center;justify-content:center;padding:0 4px}
+.chips.act{margin:-2px 0 12px}
+.chips.act .chip span{margin-left:2px;opacity:.8}
+.seg button svg{width:16px;height:16px;vertical-align:-3px}
+.top{align-items:center}
+.sheet .chips{flex-wrap:wrap;overflow:visible}
