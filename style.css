@@ -179,3 +179,19 @@ a.btn{text-decoration:none;color:inherit}
 .rate.big button{font-size:44px;padding:4px}
 .rcv{width:56px;flex-shrink:0}.detail .rcv .cover{width:100%}
 .sw-btn.cur{opacity:.75}
+/* languages */
+.chips.langs{flex-wrap:wrap;margin-bottom:8px}
+.chip.sm{padding:4px 11px;font-size:13px}
+.chip .n{font-size:11px;opacity:.65}
+.lang{display:inline-block;font-size:10px;font-weight:700;letter-spacing:.04em;padding:1px 5px;border-radius:4px;background:#E4E1F0;color:#4B437A;vertical-align:1px}
+select.sel.inp{width:100%;flex:none;padding:10px 32px 10px 12px;font-size:16px}
+.wrap .chips{flex-wrap:wrap;overflow:visible}
+/* tsundoku meaning */
+.h1btn{display:flex;align-items:baseline;gap:8px;text-align:left}
+.h1btn .jp{font-size:15px;color:var(--ink-2);font-family:var(--serif)}
+.about{text-align:center;padding:0 8px 8px}
+.about-jp{font-size:52px;line-height:1.1;color:var(--green);font-family:'Hiragino Mincho ProN','Yu Mincho',var(--serif)}
+.about h2{font-size:28px;margin:8px 0 0;color:var(--green)}
+.about .desc{text-align:left}
+.about-line{text-align:center;font-size:14px;color:var(--green);font-style:italic;margin:4px 0 10px}
+.jp-inline{font-family:var(--serif);color:var(--green)}

@@ -40,6 +40,23 @@ const starsTxt = (r) => (r ? '★'.repeat(r) + '☆'.repeat(5 - r) : '');
 const COVER_COLORS = ['#2F4A3A', '#8C3B2E', '#C9A24A', '#5C6B73', '#A6705A', '#3E5C76', '#6B5B4B'];
 const coverColor = (t) => COVER_COLORS[[...(t || '')].reduce((a, c) => a + c.charCodeAt(0), 0) % COVER_COLORS.length];
 const STATUS = { unread: 'Nepřečteno', reading: 'Čtu', read: 'Přečteno' };
+// Book language (of the edition she owns).
+const LANGS = [['cs', 'Česky'], ['en', 'Anglicky'], ['fr', 'Francouzsky'], ['de', 'Německy'], ['sk', 'Slovensky'], ['es', 'Španělsky'], ['it', 'Italsky']];
+const LANG_NAME = Object.fromEntries(LANGS.map(([k, l]) => [k, l.toLowerCase()]));
+// Rough guess from the title when no catalogue tells us (Czech diacritics, French / English small words).
+function guessLang(title) {
+  const t = ` ${(title || '').toLowerCase()} `;
+  if (/[ěščřžůťďňĚŠČŘŽŮ]/.test(t)) return 'cs';
+  if (/[àâçèêëîïôœùûÿ]/.test(t) || /\s(le|la|les|des|du|une|et|pour|dans|sur|je|que|vous|nous|avec|mon|ma)\s/.test(t) || /\s(l|d|t|qu|j|n|c)'/.test(t)) return 'fr';
+  if (/\s(the|and|of|to|in|with|for|is|you|my|your|a)\s/.test(t) || /'s\s/.test(t)) return 'en';
+  return 'cs';
+}
+const TSUNDOKU_DEF = 'Japonské slovo pro knihy, které si pořídíš a pak je necháš ležet na hromádce nepřečtené. Vzniklo spojením „tsunde oku“ (nechat ležet na hromádce) a „doku“ (číst).';
+function openAbout() {
+  sheet(`${head('')}<div class="about"><div class="about-jp">積ん読</div><h2>Tsundoku</h2><p class="sub">[cundoku] · japonsky</p>
+    <p class="desc" style="margin-top:12px">${TSUNDOKU_DEF}</p>
+    <p class="hint" style="margin-top:14px">Tahle aplikace je pro všechny tvoje hromádky. Ty přečtené, rozečtené i ty, co na tebe teprve čekají.</p></div>`);
+}
 const STATUS_AUDIO = { unread: 'Neposlechnuto', reading: 'Poslouchám', read: 'Poslechnuto' };
 const isAudio = (b) => b.format === 'audio';
 const statusMap = (audio) => (audio ? STATUS_AUDIO : STATUS);
@@ -336,7 +353,7 @@ function fromGoogle(v, isbn) {
   if (cover) cover = cover.replace('http://', 'https://').replace('&edge=curl', '');
   const is = isbn || i13 || null;
   if (!cover && is) cover = olCover(is);
-  return { title: v.title + (v.subtitle ? ': ' + v.subtitle : ''), author: v.authors?.join(', ') || null, isbn: is, year: parseInt(v.publishedDate) || null, cover_url: cover, publisher: v.publisher || null };
+  return { title: v.title + (v.subtitle ? ': ' + v.subtitle : ''), author: v.authors?.join(', ') || null, isbn: is, year: parseInt(v.publishedDate) || null, cover_url: cover, publisher: v.publisher || null, language: /^[a-z]{2}$/.test(v.language || '') ? v.language : null };
 }
 async function searchGoogle(q) {
   const r = await fetch(`https://www.googleapis.com/books/v1/volumes?key=${GBOOKS_KEY}&maxResults=10&q=` + encodeURIComponent(q));
@@ -372,6 +389,7 @@ function renderAuth(msg = '') {
   const signup = S.authMode === 'signup';
   $app.innerHTML = `<div class="auth">
     <h1>Tsundoku</h1>
+    <p class="about-line">積ん読 · kupovat knihy a nechat je ležet na hromádce nepřečtené</p>
     <p class="sub">Tvoje domácí knihovna, hodnocení a wishlist. Sdílej je s přáteli.</p>
     <form id="authf" class="card" novalidate>
       <label class="f" for="em">E-mail</label>
@@ -463,7 +481,7 @@ const PREFS_KEY = 'tsundoku_prefs';
 const prefs = (() => { try { return { layout: 'grid', sort: 'added', ...JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') }; } catch (e) { return { layout: 'grid', sort: 'added' }; } })();
 const savePrefs = () => { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (e) {} };
 // Per-screen state: search text, status filter, genre.
-const UI = { library: { q: '', filter: 'all', genre: '', format: 'book' }, wishlist: { q: '', filter: 'all', genre: '', format: 'all' }, friend: { q: '', filter: 'all', genre: '', format: 'book' } };
+const UI = { library: { q: '', filter: 'all', genre: '', format: 'book', lang: '' }, wishlist: { q: '', filter: 'all', genre: '', format: 'all', lang: '' }, friend: { q: '', filter: 'all', genre: '', format: 'book', lang: '' } };
 const filtersFor = (audio) => [['all', 'Vše'], ['read', audio ? 'Poslechnuto' : 'Přečteno'], ['reading', audio ? 'Poslouchám' : 'Čtu'], ['unread', audio ? 'Neposlechnuto' : 'Nepřečteno'], ['loaned', 'Půjčené']];
 const SORTS = [['added', 'Nejnovější'], ['title', 'Název A–Z'], ['author', 'Autor A–Z']];
 // Surname of the FIRST author, ignoring notes in brackets, co-authors, translators and "& kol.".
@@ -482,7 +500,7 @@ function sortBooks(list, sort) {
 }
 const matchQ = (b, q) => {
   if (!q) return true;
-  const hay = normT([b.title, b.author, b.original_title, b.isbn, b.loan_person, b.narrator, b.audio_source, ...(b.tags || [])].join(' '));
+  const hay = normT([b.title, b.author, b.original_title, b.isbn, b.loan_person, b.narrator, b.audio_source, LANG_NAME[b.language], ...(b.tags || [])].join(' '));
   return q.split(/\s+/).filter(Boolean).every((w) => hay.includes(normT(w)));
 };
 function applyUI(books, key) {
@@ -492,6 +510,7 @@ function applyUI(books, key) {
     if (u.filter === 'loaned') { if (!b.loan_type) return false; }
     else if (u.filter !== 'all' && b.status !== u.filter) return false;
     if (u.genre && !(b.tags || []).includes(u.genre)) return false;
+    if (u.lang && (b.language || 'cs') !== u.lang) return false;
     return matchQ(b, u.q);
   }), prefs.sort);
 }
@@ -504,24 +523,30 @@ function booksHtml(list, own = true) {
     return `<div class="list blist">${list.map((b) => `${swipeable(b) ? `<div class="swipe" data-sid="${b.id}"><div class="sw-actions">${acts(b)}</div>` : ''}<button class="book brow" data-id="${b.id}" data-own="${own ? 1 : 0}">
       <div class="thumb">${coverHtml(b)}</div>
       <div class="grow"><b>${esc(b.title)}</b><span>${esc([b.author, b.year].filter(Boolean).join(' · '))}</span>
-        <div class="meta">${b.rating ? `<span class="stars">${starsTxt(b.rating)}</span>` : ''}
+        <div class="meta">${b.rating ? `<span class="stars">${starsTxt(b.rating)}</span>` : ''}${b.language && b.language !== 'cs' ? `<span class="lang">${b.language.toUpperCase()}</span>` : ''}
           ${b.list === 'library' ? `<span class="pill sm">${statusLabel(b)}</span>` : ''}
           ${b.loan_type ? `<span class="pill sm wine">${esc(loanText(b))}</span>` : ''}
           ${(b.tags || []).slice(0, 3).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div></div></button>${swipeable(b) ? '</div>' : ''}`).join('')}</div>
       ${list.some(swipeable) && !hintSeen() ? '<p class="hint" style="text-align:center">Tip: posuň knihu prstem doleva a rychle ji označíš jako Čtu nebo Přečteno.</p>' : ''}`;
   }
   return `<div class="grid">${list.map((b) => `<button class="book" data-id="${b.id}" data-own="${own ? 1 : 0}">
-    ${coverHtml(b)}<div class="t">${esc(b.title)}</div><div class="a">${esc(b.author || '')}</div>
+    ${coverHtml(b)}<div class="t">${b.language && b.language !== 'cs' ? `<span class="lang">${b.language.toUpperCase()}</span> ` : ''}${esc(b.title)}</div><div class="a">${esc(b.author || '')}</div>
     ${b.rating ? `<div class="stars">${starsTxt(b.rating)}</div>` : ''}
     ${b.loan_type ? `<div class="loan">${esc(loanText(b))}</div>` : ''}</button>`).join('')}</div>`;
 }
 // Search box with clear button + status chips + sort / genre / layout toolbar.
+function langChips(key, books) {
+  const u = UI[key], cnt = {};
+  books.forEach((b) => { const l = b.language || 'cs'; cnt[l] = (cnt[l] || 0) + 1; });
+  const langs = LANGS.filter(([k]) => cnt[k]);
+  if (langs.length < 2 && !u.lang) return '';
+  return `<div class="chips langs">${langs.map(([k, l]) => `<button class="chip sm ${u.lang === k ? 'on' : ''}" data-lang="${k}" data-langk="${key}">${l} <span class="n">${cnt[k]}</span></button>`).join('')}</div>`;
+}
 function controlsHtml(key, booksAll, { chips = true, placeholder = 'Hledat' } = {}) {
   const u = UI[key];
   const nAudio = booksAll.filter(isAudio).length, nBook = booksAll.length - nAudio;
-  if (u.format === 'audio' && !nAudio) u.format = 'book';
-  if (u.format === 'book' && !nBook && nAudio) u.format = 'audio';
-  const showFmt = key !== 'wishlist' && nAudio > 0;
+  if (key !== 'library' && u.format === 'audio' && !nAudio) u.format = 'book';
+  const showFmt = key === 'library' || (key === 'friend' && nAudio > 0);
   const books = u.format === 'all' ? booksAll : booksAll.filter((b) => (b.format || 'book') === u.format);
   const counts = {};
   books.forEach((b) => (b.tags || []).forEach((t) => (counts[t] = (counts[t] || 0) + 1)));
@@ -531,6 +556,7 @@ function controlsHtml(key, booksAll, { chips = true, placeholder = 'Hledat' } = 
     <div class="searchbox"><span class="sico">${I.search}</span>
       <input class="search" data-q="${key}" type="text" inputmode="search" enterkeyhint="search" placeholder="${esc(placeholder)}" value="${esc(u.q)}" autocomplete="off">
       <button class="sclear" data-clear="${key}" aria-label="Smazat hledání" ${u.q ? '' : 'hidden'}>${I.x}</button></div>
+    ${langChips(key, books)}
     ${chips ? `<div class="chips">${filtersFor(u.format === 'audio').map(([k, l]) => `<button class="chip ${u.filter === k ? 'on' : ''}" data-f="${k}" data-fk="${key}">${l}</button>`).join('')}</div>` : ''}
     <div class="toolbar">
       <select class="sel" data-sort aria-label="Řazení">${SORTS.map(([k, l]) => `<option value="${k}" ${prefs.sort === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
@@ -551,8 +577,12 @@ function updateResults(key) {
   const filtered = list.length !== all.length;
   const across = u.q && u.format !== 'all' && listSource(key).some(isAudio);
   box.innerHTML = (across ? `<p class="count">Hledám ve všem: v knihách i audioknihách</p>` : '')
-    + (filtered && !across ? `<p class="count">${list.length} z ${all.length}${u.genre ? ` · žánr ${esc(u.genre)} <button class="link" data-genre-off="${key}">zrušit</button>` : ''}</p>` : '')
-    + (list.length ? booksHtml(list, key !== 'friend') : `<div class="empty">Nic tu neodpovídá hledání ani filtru.</div>`);
+    + (filtered && !across ? `<p class="count">${list.length} z ${all.length}${u.genre ? ` · žánr ${esc(u.genre)} <button class="link" data-genre-off="${key}">zrušit</button>` : ''}${u.lang ? ` · ${LANG_NAME[u.lang]}` : ''}</p>` : '')
+    + (list.length ? booksHtml(list, key !== 'friend')
+      : key === 'library' && u.format === 'audio' && !u.q && !listSource(key).some(isAudio)
+        ? `<div class="empty"><h3>Zatím žádné audioknihy</h3><p>Přidej první. Stačí název nebo screenshot obálky z aplikace, kde posloucháš.</p><br><button class="btn primary" data-addaudio>${I.headphones}Přidat audioknihu</button></div>`
+        : `<div class="empty">Nic tu neodpovídá hledání ani filtru.</div>`);
+  const aa = box.querySelector('[data-addaudio]'); if (aa) aa.onclick = () => { S.defaultFormat = 'audio'; S.defaultList = 'library'; S.view = 'add'; render(); window.scrollTo(0, 0); };
   box.querySelectorAll('.book').forEach((b) => (b.onclick = () => {
     if (b.dataset.swiped) { delete b.dataset.swiped; return; }
     if (closeSwipes(box)) return;
@@ -571,6 +601,7 @@ function bindControls() {
   $app.querySelectorAll('[data-f]').forEach((b) => (b.onclick = () => { UI[b.dataset.fk].filter = b.dataset.f; render(); }));
   $app.querySelectorAll('[data-sort]').forEach((sel) => (sel.onchange = () => { prefs.sort = sel.value; savePrefs(); $app.querySelectorAll('[id^="results-"]').forEach((r) => updateResults(r.id.slice(8))); }));
   $app.querySelectorAll('[data-genre]').forEach((sel) => (sel.onchange = () => { UI[sel.dataset.genre].genre = sel.value; updateResults(sel.dataset.genre); }));
+  $app.querySelectorAll('[data-lang]').forEach((b) => (b.onclick = () => { const u = UI[b.dataset.langk]; u.lang = u.lang === b.dataset.lang ? '' : b.dataset.lang; render(); }));
   $app.querySelectorAll('[data-fmt]').forEach((b) => (b.onclick = () => { const u = UI[b.dataset.fmtk]; u.format = b.dataset.fmt; u.filter = 'all'; u.genre = ''; render(); }));
   $app.querySelectorAll('[data-layout]').forEach((b) => (b.onclick = () => { prefs.layout = b.dataset.layout; savePrefs(); render(); }));
   $app.querySelectorAll('[id^="results-"]').forEach((r) => updateResults(r.id.slice(8)));
@@ -656,7 +687,7 @@ function viewLibrary() {
   const readYear = lib.filter((b) => b.status === 'read' && new Date(b.updated_at).getFullYear() === year).length;
   const loaned = lib.filter((b) => b.loan_type).length;
   const nA = lib.filter(isAudio).length, nB = lib.length - nA;
-  return `<div class="top"><div><h1>Tsundoku</h1><p class="sub">${nB} ${plural(nB, 'kniha', 'knihy', 'knih')}${nA ? ` · ${nA} ${plural(nA, 'audiokniha', 'audioknihy', 'audioknih')}` : ''} · ${readYear} letos dočteno${loaned ? ` · ${loaned} půjčeno` : ''}</p></div>
+  return `<div class="top"><div><button class="h1btn" id="about" aria-label="Co znamená tsundoku"><h1>Tsundoku</h1><span class="jp">積ん読</span></button><p class="sub">${nB} ${plural(nB, 'kniha', 'knihy', 'knih')}${nA ? ` · ${nA} ${plural(nA, 'audiokniha', 'audioknihy', 'audioknih')}` : ''} · ${readYear} letos dočteno${loaned ? ` · ${loaned} půjčeno` : ''}</p></div>
     <button class="icon-btn" id="me" aria-label="Můj účet">${I.user}</button></div>
     ${missingBanner()}${tagBanner()}
     ${lib.length ? controlsHtml('library', lib, { placeholder: 'Hledat název, autora, žánr…' })
@@ -728,6 +759,7 @@ function bindView() {
   bindControls();
   const ta = document.getElementById('tag-all'); if (ta) ta.onclick = () => tagMany(S.books.filter((b) => !b.tagged_at));
   const meBtn = document.getElementById('me'); if (meBtn) meBtn.onclick = openAccount;
+  const ab = document.getElementById('about'); if (ab) ab.onclick = openAbout;
   const ea = document.getElementById('enr-all'); if (ea) ea.onclick = () => { enrichMany(S.books.filter((b) => !b.enriched_at)); render(); };
   const back = document.getElementById('back'); if (back) back.onclick = () => { S.friend = null; render(); };
 
@@ -786,7 +818,7 @@ async function invite() {
 }
 async function openFriend(id) {
   const { data } = await sb.from('books').select('*').eq('owner_id', id).order('created_at', { ascending: false });
-  S.friend = S.profilesById[id]; S.friendBooks = data || []; S.friendTab = 'library'; UI.friend = { q: '', filter: 'all', genre: '', format: 'book' }; render(); window.scrollTo(0, 0);
+  S.friend = S.profilesById[id]; S.friendBooks = data || []; S.friendTab = 'library'; UI.friend = { q: '', filter: 'all', genre: '', format: 'book', lang: '' }; render(); window.scrollTo(0, 0);
 }
 
 /* ---------- Sheets ---------- */
@@ -812,7 +844,7 @@ async function openBook(id, own) {
   }
   const iHave = !own && S.books.some((x) => (b.isbn && x.isbn === b.isbn) || x.title.toLowerCase() === b.title.toLowerCase());
   const pending = own && enrichState.ids.has(b.id);
-  const meta = [isAudio(b) && b.narrator && `čte ${b.narrator}`, isAudio(b) && b.audio_source, b.publisher, b.original_title && `orig. ${b.original_title}`].filter(Boolean).join(' · ');
+  const meta = [LANG_NAME[b.language || 'cs'], isAudio(b) && b.narrator && `čte ${b.narrator}`, isAudio(b) && b.audio_source, b.publisher, b.original_title && `orig. ${b.original_title}`].filter(Boolean).join(' · ');
   const { el, close } = sheet(`${head('')}
     <div class="detail"><div id="dcv">${coverHtml(b)}${b.cover_is_original && safeUrl(b.cover_url) ? '<p class="cover-note">Obálka originálu</p>' : ''}</div><div><h2>${esc(b.title)}</h2><p class="sub">${esc([b.author, b.year].filter(Boolean).join(' · '))}</p>
       ${meta ? `<p class="sub" style="font-size:12px">${esc(meta)}</p>` : ''}
@@ -837,7 +869,7 @@ async function openBook(id, own) {
   el.querySelectorAll('[data-tag]').forEach((t) => (t.onclick = () => {
     close();
     const key = own ? (b.list === 'wishlist' ? 'wishlist' : 'library') : 'friend';
-    UI[key] = { q: '', filter: 'all', genre: t.dataset.tag, format: key === 'wishlist' ? 'all' : (b.format || 'book') };
+    UI[key] = { q: '', filter: 'all', genre: t.dataset.tag, format: key === 'wishlist' ? 'all' : (b.format || 'book'), lang: '' };
     if (own) S.view = key; else S.friendTab = b.list;
     render(); window.scrollTo(0, 0);
   }));
@@ -875,7 +907,7 @@ async function openBook(id, own) {
     const w = el.querySelector('#want');
     if (w) w.onclick = async () => {
       const { error } = await sb.from('books').insert({ list: 'wishlist', title: b.title, author: b.author, isbn: b.isbn, year: b.year, cover_url: b.cover_url,
-        description: b.description, publisher: b.publisher, cover_is_original: !!b.cover_is_original, format: b.format || 'book', narrator: b.narrator, original_title: b.original_title, dbk_url: b.dbk_url, gr_url: b.gr_url, enriched_at: b.enriched_at });
+        description: b.description, publisher: b.publisher, cover_is_original: !!b.cover_is_original, format: b.format || 'book', narrator: b.narrator, language: b.language, original_title: b.original_title, dbk_url: b.dbk_url, gr_url: b.gr_url, enriched_at: b.enriched_at });
       if (error) return toast('Nepodařilo se uložit.');
       await loadBooks(); close(); toast('Přidáno do tvého wishlistu');
     };
@@ -885,6 +917,7 @@ async function openBook(id, own) {
 function openEditor(data, isNew = false, photoFile = null) {
   const d = { list: S.defaultList || 'library', format: S.defaultFormat || 'book', status: 'unread', rating: null, note: '', loan_type: null, loan_person: '', narrator: '', audio_source: '', ...data };
   if (!d.format) d.format = 'book';
+  if (!d.language) d.language = guessLang(d.title);
   d.tags = [...(data.tags || [])];
   const allTags = [...new Set([...GENRES, ...S.books.flatMap((b) => b.tags || [])])].sort(cmpCs);
   const { el, close } = sheet(`${head(isNew ? (d.format === 'audio' ? 'Nová audiokniha' : 'Nová kniha') : (d.format === 'audio' ? 'Upravit audioknihu' : 'Upravit knihu'))}
@@ -894,6 +927,7 @@ function openEditor(data, isNew = false, photoFile = null) {
         <label class="f" for="ba">Autor</label><input class="inp" id="ba" value="${esc(d.author || '')}" maxlength="300"></div></div>
       <div class="row"><div style="flex:1"><label class="f" for="bi">ISBN</label><input class="inp" id="bi" value="${esc(d.isbn || '')}" inputmode="numeric" maxlength="17"></div>
         <div style="width:100px"><label class="f" for="by">Rok</label><input class="inp" id="by" value="${esc(d.year || '')}" inputmode="numeric" maxlength="4"></div></div>
+      <label class="f" for="blg">Jazyk</label><select class="sel inp" id="blg">${LANGS.map(([k, l]) => `<option value="${k}" ${d.language === k ? 'selected' : ''}>${l}</option>`).join('')}${LANGS.some(([k]) => k === d.language) ? '' : `<option value="${esc(d.language)}" selected>${esc(d.language)}</option>`}</select>
       <label class="f">Formát</label><div class="seg" id="sf2">${[['book', 'Kniha'], ['audio', 'Audiokniha']].map(([k, l]) => `<button type="button" data-k="${k}" class="${d.format === k ? 'on' : ''}">${l}</button>`).join('')}</div>
       <div id="audioonly" ${d.format === 'audio' ? '' : 'hidden'}>
         <div class="row"><div style="flex:1"><label class="f" for="bnr">Čte</label><input class="inp" id="bnr" maxlength="200" value="${esc(d.narrator || '')}" placeholder="Kdo audioknihu načetl"></div>
@@ -968,7 +1002,7 @@ function openEditor(data, isNew = false, photoFile = null) {
       list: d.list, status: d.list === 'wishlist' ? 'unread' : d.status, rating: d.list === 'wishlist' ? null : d.rating,
       note: el.querySelector('#bn').value.trim() || null, cover_url,
       loan_type: d.list === 'wishlist' ? null : d.loan_type, loan_person: d.list === 'wishlist' || !d.loan_type ? null : (lp.value.trim() || null),
-      tags: d.tags, format: d.format,
+      tags: d.tags, format: d.format, language: el.querySelector('#blg').value || null,
       narrator: d.format === 'audio' ? (el.querySelector('#bnr').value.trim() || null) : null,
       audio_source: d.format === 'audio' ? (el.querySelector('#bas').value.trim() || null) : null,
     };
@@ -1060,7 +1094,7 @@ async function recognizePhoto(file) {
     return openEditor({ title: '' }, true, blob);
   }
   // What is printed on the cover is the truth for this edition; catalogues only add details.
-  const fromPhoto = { title: data.title, author: data.author, isbn: data.isbn, year: data.year };
+  const fromPhoto = { title: data.title, author: data.author, isbn: data.isbn, year: data.year, language: /^[a-z]{2}$/.test(data.language || '') ? data.language : null };
   let found = [];
   if (data.isbn) {
     ld.set('Hledám knihu podle ISBN…');
@@ -1159,7 +1193,7 @@ function openShelfReview(found, unreadable) {
         m = res.find((b) => (normT(b.title).startsWith(nt.slice(0, 10)) || nt.startsWith(normT(b.title).slice(0, 10))) && (!na || normT(b.author).includes(na.slice(-6))));
       } catch (e) {}
       const fullAuthor = m?.author && author && m.author.length > author.length && normT(m.author).includes(normT(author)) ? m.author : author;
-      out[i] = { list: 'library', status, title, author: fullAuthor || m?.author || null, isbn: m?.isbn || null, year: m?.year || null, cover_url: safeUrl(m?.cover_url) || null };
+      out[i] = { list: 'library', status, language: m?.language || guessLang(title), title, author: fullAuthor || m?.author || null, isbn: m?.isbn || null, year: m?.year || null, cover_url: safeUrl(m?.cover_url) || null };
       btn.textContent = `Doplňuji údaje… ${++done}/${pick.length}`;
     });
     const queue = [...work];
@@ -1223,6 +1257,7 @@ function openSearch() {
 function openAccount() {
   const { el, close } = sheet(`${head('Můj účet')}
     <div class="li" style="padding:0 0 16px"><div class="av">${esc(initials(S.profile.display_name))}</div><div class="grow"><b>${esc(S.profile.display_name)}</b><span>@${esc(S.profile.username)} · ${esc(S.session.user.email)}</span></div></div>
+    <div class="card" style="padding:12px 14px;margin-bottom:12px"><b class="jp-inline">積ん読 Tsundoku</b><p class="sub" style="margin-top:4px">${TSUNDOKU_DEF}</p></div>
     <div class="stack"><button class="btn" id="exp">Stáhnout knihovnu jako CSV</button><button class="btn danger" id="lo">${I.logout}Odhlásit se</button></div>`);
   el.querySelector('#lo').onclick = async () => { close(); await sb.auth.signOut(); };
   el.querySelector('#exp').onclick = () => {
