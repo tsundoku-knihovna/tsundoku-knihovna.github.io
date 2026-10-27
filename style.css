@@ -119,3 +119,38 @@ a.btn{text-decoration:none;color:inherit}
 .stack .row .btn{flex:1;padding:12px 10px}
 #dcv{width:96px;flex-shrink:0}#dcv .cover{width:100%}
 .cover-note{font-size:11px;color:var(--ink-2);text-align:center;margin-top:4px;line-height:1.2}
+/* search with clear button */
+.searchbox{position:relative;margin-bottom:12px}
+.searchbox .search{margin:0;padding-left:40px;padding-right:44px}
+.searchbox .sico{position:absolute;left:13px;top:50%;transform:translateY(-50%);color:var(--ink-2);display:flex}
+.searchbox .sico svg{width:18px;height:18px}
+.sclear{position:absolute;right:6px;top:50%;transform:translateY(-50%);width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:var(--ink-2);background:var(--line)}
+.sclear svg{width:16px;height:16px}
+/* toolbar: sort, genre, layout */
+.toolbar{display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap}
+.sel{appearance:none;-webkit-appearance:none;padding:8px 30px 8px 12px;border-radius:10px;border:1px solid var(--line-2);background:var(--paper-2) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%237A6F63' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 8px center/16px;font-size:14px;max-width:100%;flex:1 1 auto;min-width:0}
+.seg.layout{margin-left:auto;flex:0 0 auto}
+.seg.layout button{padding:7px 10px;display:flex;align-items:center}
+.seg.layout svg{width:18px;height:18px}
+.count{font-size:13px;color:var(--ink-2);margin:-4px 0 10px}
+/* list layout */
+.blist .brow{display:flex;gap:12px;align-items:flex-start;padding:10px 12px;border-top:1px solid var(--line);width:100%;text-align:left}
+.blist .brow:first-child{border-top:none}
+.brow .thumb{width:44px;flex-shrink:0}
+.brow .thumb .cover{font-size:7px;padding:3px;border-radius:3px}
+.brow .grow{flex:1;min-width:0}
+.brow .grow b{display:block;font-weight:600;font-size:15px;line-height:1.3}
+.brow .grow>span{font-size:13px;color:var(--ink-2)}
+.brow .meta{display:flex;flex-wrap:wrap;gap:4px 6px;align-items:center;margin-top:4px}
+.pill.sm{font-size:11px;padding:2px 8px}
+.tag{display:inline-flex;align-items:center;font-size:11px;padding:2px 8px;border-radius:99px;background:#EFE6D5;color:#6B5B4B}
+.tag.big{font-size:13px;padding:4px 10px;gap:4px}
+.tag.big button{font-size:16px;line-height:1;color:#6B5B4B;padding:0 0 0 2px}
+.tags-row{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 2px}
+.tags-row .tag{cursor:pointer}
+.tags-edit{display:flex;flex-wrap:wrap;gap:6px}
+.book .loan{font-size:11px;color:var(--wine);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.link{font-size:13px}
+.searchbox+.chips{flex-wrap:wrap;overflow:visible}
+.toolbar{flex-wrap:nowrap}
+.toolbar .sel{flex:1 1 0;width:0}

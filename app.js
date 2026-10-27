@@ -28,6 +28,8 @@ const I = {
   share: ic('<circle cx="6" cy="12" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="m8.7 10.7 6.6-3.4M8.7 13.3l6.6 3.4"/>'),
   logout: ic('<path d="M14 8V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h7a2 2 0 0 0 2-2v-2"/><path d="M9 12h12l-3-3M18 15l3-3"/>'),
   left: ic('<path d="m15 6-6 6 6 6"/>'),
+  grid: ic('<rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/>'),
+  list: ic('<path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/>'),
   user: ic('<circle cx="12" cy="8" r="4"/><path d="M6 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/>'),
 };
 
@@ -248,6 +250,38 @@ async function enrichMany(books) {
   else if (!enrichState.ids.size) toast('Děj a údaje jsou doplněné');
   await loadBooks();
   if (!$sheet.innerHTML) render();
+  const ids = new Set(todo.map((b) => b.id));
+  tagMany(S.books.filter((b) => ids.has(b.id) && !b.tagged_at));
+}
+
+/* ---------- Genres (tags) ---------- */
+const GENRES = ['Román', 'Detektivka', 'Thriller', 'Krimi', 'Fantasy', 'Sci-fi', 'Dystopie', 'Horor', 'Romantika', 'Historický', 'Válečný', 'Dobrodružný', 'Psychologický', 'Společenský', 'Humor', 'Magický realismus', 'Klasika', 'Povídky', 'Poezie', 'Drama', 'Young adult', 'Pro děti', 'Komiks', 'Literatura faktu', 'Životopis', 'Paměti', 'Filozofie', 'Cestopis', 'Kuchařka', 'Seberozvoj', 'Odborná', 'Česká literatura', 'LGBT+'];
+const tagState = { running: false };
+// AI assigns genres in batches of 25 (no web search, so it costs almost nothing).
+async function tagMany(books) {
+  const todo = books.filter((b) => b && !b.tagged_at);
+  if (!todo.length || tagState.running) return;
+  tagState.running = true; render();
+  let bar = document.getElementById('enrich-bar');
+  if (!bar) { bar = document.createElement('div'); bar.id = 'enrich-bar'; document.body.appendChild(bar); }
+  let done = 0, stop = null;
+  for (let i = 0; i < todo.length && !stop; i += 25) {
+    const batch = todo.slice(i, i + 25);
+    bar.innerHTML = `<div class="spin"></div>Přiřazuji žánry… ${done}/${todo.length}`;
+    const { data, error } = await sb.functions.invoke('tag-books', { body: { books: batch.map((b) => ({ id: b.id, title: b.title, author: b.author, original_title: b.original_title, description: b.description })) } });
+    if (error) { let c = ''; try { c = (await error.context.json()).error; } catch (e) {} stop = c || 'failed'; break; }
+    const now = new Date().toISOString();
+    await Promise.all(batch.map(async (b) => {
+      const ai = data.tags?.[b.id] || [];
+      const tags = [...new Set([...(b.tags || []), ...ai])].slice(0, 12);
+      const { error: e2 } = await sb.from('books').update({ tags, tagged_at: now }).eq('id', b.id);
+      if (!e2) { b.tags = tags; b.tagged_at = now; }
+    }));
+    done += batch.length;
+  }
+  bar.remove(); tagState.running = false;
+  toast(stop ? (stop === 'limit' || stop === 'no_key' ? deepErrorText(stop) : 'Přiřazení žánrů se nepovedlo. Zkus to znovu.') : 'Žánry jsou přiřazené');
+  if (!$sheet.innerHTML) render();
 }
 
 async function lookupIsbnCatalogs(isbn) {
@@ -404,25 +438,109 @@ function render() {
   bindView();
 }
 
-function bookGrid(list, own = true) {
+/* ---------- Book lists: search, filters, sorting, grid/list ---------- */
+const PREFS_KEY = 'tsundoku_prefs';
+const prefs = (() => { try { return { layout: 'grid', sort: 'added', ...JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') }; } catch (e) { return { layout: 'grid', sort: 'added' }; } })();
+const savePrefs = () => { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (e) {} };
+// Per-screen state: search text, status filter, genre.
+const UI = { library: { q: '', filter: 'all', genre: '' }, wishlist: { q: '', filter: 'all', genre: '' }, friend: { q: '', filter: 'all', genre: '' } };
+const FILTERS = [['all', 'Vše'], ['read', 'Přečteno'], ['reading', 'Čtu'], ['unread', 'Nepřečteno'], ['loaned', 'Půjčené']];
+const SORTS = [['added', 'Nejnovější'], ['title', 'Název A–Z'], ['author', 'Autor A–Z']];
+const surnameOf = (a) => ((a || '').split(',')[0].trim().split(/\s+/).pop() || '');
+const cmpCs = (a, b) => (a || '').localeCompare(b || '', 'cs', { sensitivity: 'base' });
+function sortBooks(list, sort) {
+  const l = [...list];
+  if (sort === 'title') l.sort((a, b) => cmpCs(a.title, b.title));
+  else if (sort === 'author') l.sort((a, b) => cmpCs(surnameOf(a.author), surnameOf(b.author)) || cmpCs(a.author, b.author) || cmpCs(a.title, b.title));
+  else l.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+  return l;
+}
+const matchQ = (b, q) => {
+  if (!q) return true;
+  const hay = normT([b.title, b.author, b.original_title, b.isbn, b.loan_person, ...(b.tags || [])].join(' '));
+  return q.split(/\s+/).filter(Boolean).every((w) => hay.includes(normT(w)));
+};
+function applyUI(books, key) {
+  const u = UI[key];
+  return sortBooks(books.filter((b) => {
+    if (u.filter === 'loaned') { if (!b.loan_type) return false; }
+    else if (u.filter !== 'all' && b.status !== u.filter) return false;
+    if (u.genre && !(b.tags || []).includes(u.genre)) return false;
+    return matchQ(b, u.q);
+  }), prefs.sort);
+}
+const loanText = (b) => (b.loan_type === 'lent' ? `Půjčeno${b.loan_person ? ': ' + b.loan_person : ''}` : b.loan_type === 'borrowed' ? `Vypůjčeno${b.loan_person ? ' od: ' + b.loan_person : ''}` : '');
+function booksHtml(list, own = true) {
+  if (prefs.layout === 'list') {
+    return `<div class="list blist">${list.map((b) => `<button class="book brow" data-id="${b.id}" data-own="${own ? 1 : 0}">
+      <div class="thumb">${coverHtml(b)}</div>
+      <div class="grow"><b>${esc(b.title)}</b><span>${esc([b.author, b.year].filter(Boolean).join(' · '))}</span>
+        <div class="meta">${b.rating ? `<span class="stars">${starsTxt(b.rating)}</span>` : ''}
+          ${b.list === 'library' ? `<span class="pill sm">${STATUS[b.status]}</span>` : ''}
+          ${b.loan_type ? `<span class="pill sm wine">${esc(loanText(b))}</span>` : ''}
+          ${(b.tags || []).slice(0, 3).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div></div></button>`).join('')}</div>`;
+  }
   return `<div class="grid">${list.map((b) => `<button class="book" data-id="${b.id}" data-own="${own ? 1 : 0}">
     ${coverHtml(b)}<div class="t">${esc(b.title)}</div><div class="a">${esc(b.author || '')}</div>
-    ${b.rating ? `<div class="stars">${starsTxt(b.rating)}</div>` : ''}</button>`).join('')}</div>`;
+    ${b.rating ? `<div class="stars">${starsTxt(b.rating)}</div>` : ''}
+    ${b.loan_type ? `<div class="loan">${esc(loanText(b))}</div>` : ''}</button>`).join('')}</div>`;
 }
-const matchQ = (b, q) => !q || (b.title + ' ' + (b.author || '')).toLowerCase().includes(q.toLowerCase());
+// Search box with clear button + status chips + sort / genre / layout toolbar.
+function controlsHtml(key, books, { chips = true, placeholder = 'Hledat' } = {}) {
+  const u = UI[key];
+  const counts = {};
+  books.forEach((b) => (b.tags || []).forEach((t) => (counts[t] = (counts[t] || 0) + 1)));
+  const genres = Object.keys(counts).sort(cmpCs);
+  if (u.genre && !counts[u.genre]) u.genre = '';
+  return `<div class="searchbox"><span class="sico">${I.search}</span>
+      <input class="search" data-q="${key}" type="text" inputmode="search" enterkeyhint="search" placeholder="${esc(placeholder)}" value="${esc(u.q)}" autocomplete="off">
+      <button class="sclear" data-clear="${key}" aria-label="Smazat hledání" ${u.q ? '' : 'hidden'}>${I.x}</button></div>
+    ${chips ? `<div class="chips">${FILTERS.map(([k, l]) => `<button class="chip ${u.filter === k ? 'on' : ''}" data-f="${k}" data-fk="${key}">${l}</button>`).join('')}</div>` : ''}
+    <div class="toolbar">
+      <select class="sel" data-sort aria-label="Řazení">${SORTS.map(([k, l]) => `<option value="${k}" ${prefs.sort === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      ${genres.length ? `<select class="sel" data-genre="${key}" aria-label="Žánr"><option value="">Žánr: vše</option>${genres.map((g) => `<option value="${esc(g)}" ${u.genre === g ? 'selected' : ''}>${esc(g)} (${counts[g]})</option>`).join('')}</select>` : ''}
+      <div class="seg layout"><button type="button" data-layout="grid" class="${prefs.layout === 'grid' ? 'on' : ''}" aria-label="Obálky">${I.grid}</button><button type="button" data-layout="list" class="${prefs.layout === 'list' ? 'on' : ''}" aria-label="Seznam">${I.list}</button></div>
+    </div>
+    <div id="results-${key}"></div>`;
+}
+const listSource = (key) => key === 'library' ? S.books.filter((b) => b.list === 'library')
+  : key === 'wishlist' ? S.books.filter((b) => b.list === 'wishlist')
+  : S.friendBooks.filter((b) => b.list === S.friendTab);
+function updateResults(key) {
+  const box = document.getElementById('results-' + key);
+  if (!box) return;
+  const all = listSource(key);
+  const list = applyUI(all, key);
+  const u = UI[key];
+  const filtered = list.length !== all.length;
+  box.innerHTML = (filtered ? `<p class="count">${list.length} z ${all.length}${u.genre ? ` · žánr ${esc(u.genre)} <button class="link" data-genre-off="${key}">zrušit</button>` : ''}</p>` : '')
+    + (list.length ? booksHtml(list, key !== 'friend') : `<div class="empty">Nic tu neodpovídá hledání ani filtru.</div>`);
+  box.querySelectorAll('.book').forEach((b) => (b.onclick = () => openBook(b.dataset.id, b.dataset.own === '1')));
+  const off = box.querySelector('[data-genre-off]'); if (off) off.onclick = () => { u.genre = ''; render(); };
+}
+function bindControls() {
+  $app.querySelectorAll('[data-q]').forEach((inp) => {
+    const key = inp.dataset.q, clr = $app.querySelector(`[data-clear="${key}"]`);
+    inp.oninput = () => { UI[key].q = inp.value; clr.hidden = !inp.value; updateResults(key); };
+    inp.onkeydown = (e) => { if (e.key === 'Enter') inp.blur(); };
+    clr.onclick = () => { inp.value = ''; UI[key].q = ''; clr.hidden = true; updateResults(key); inp.focus(); };
+  });
+  $app.querySelectorAll('[data-f]').forEach((b) => (b.onclick = () => { UI[b.dataset.fk].filter = b.dataset.f; render(); }));
+  $app.querySelectorAll('[data-sort]').forEach((sel) => (sel.onchange = () => { prefs.sort = sel.value; savePrefs(); $app.querySelectorAll('[id^="results-"]').forEach((r) => updateResults(r.id.slice(8))); }));
+  $app.querySelectorAll('[data-genre]').forEach((sel) => (sel.onchange = () => { UI[sel.dataset.genre].genre = sel.value; updateResults(sel.dataset.genre); }));
+  $app.querySelectorAll('[data-layout]').forEach((b) => (b.onclick = () => { prefs.layout = b.dataset.layout; savePrefs(); render(); }));
+  $app.querySelectorAll('[id^="results-"]').forEach((r) => updateResults(r.id.slice(8)));
+}
 
 function viewLibrary() {
   const lib = S.books.filter((b) => b.list === 'library');
   const year = new Date().getFullYear();
   const readYear = lib.filter((b) => b.status === 'read' && new Date(b.updated_at).getFullYear() === year).length;
-  const list = lib.filter((b) => (S.filter === 'all' || b.status === S.filter) && matchQ(b, S.query));
-  const chip = (k, l) => `<button class="chip ${S.filter === k ? 'on' : ''}" data-f="${k}">${l}</button>`;
-  return `<div class="top"><div><h1>Tsundoku</h1><p class="sub">${lib.length} ${plural(lib.length, 'kniha', 'knihy', 'knih')} · ${readYear} přečteno letos</p></div>
+  const loaned = lib.filter((b) => b.loan_type).length;
+  return `<div class="top"><div><h1>Tsundoku</h1><p class="sub">${lib.length} ${plural(lib.length, 'kniha', 'knihy', 'knih')} · ${readYear} přečteno letos${loaned ? ` · ${loaned} půjčeno` : ''}</p></div>
     <button class="icon-btn" id="me" aria-label="Můj účet">${I.user}</button></div>
-    ${missingBanner()}
-    ${lib.length ? `<input class="search" id="q" type="search" placeholder="Hledat v knihovně" value="${esc(S.query)}">
-    <div class="chips">${chip('all', 'Vše')}${chip('reading', 'Čtu')}${chip('read', 'Přečteno')}${chip('unread', 'Nepřečteno')}</div>
-    ${list.length ? bookGrid(list) : `<div class="empty">Nic tu neodpovídá hledání.</div>`}`
+    ${missingBanner()}${tagBanner()}
+    ${lib.length ? controlsHtml('library', lib, { placeholder: 'Hledat název, autora, žánr…' })
     : `<div class="empty"><h3>Začni plnit knihovnu</h3><p>Naskenuj čárový kód na zadní straně knihy nebo vyfoť obálku.</p><br><button class="btn primary" data-go="add">${I.scan}Přidat první knihu</button></div>`}`;
 }
 function missingBanner() {
@@ -432,11 +550,16 @@ function missingBanner() {
   return `<div class="card banner"><div class="grow"><b>U ${miss.length} ${plural(miss.length, 'knihy', 'knih', 'knih')} chybí děj a údaje</b>
     <span>Rok, nakladatel, obálka a o čem kniha je. Asi ${kc} Kč celkem.</span></div><button class="mini primary" id="enr-all">Doplnit</button></div>`;
 }
+function tagBanner() {
+  const miss = S.books.filter((b) => !b.tagged_at);
+  if (!miss.length || tagState.running || enrichState.ids.size) return '';
+  return `<div class="card banner"><div class="grow"><b>${miss.length} ${plural(miss.length, 'kniha nemá', 'knihy nemají', 'knih nemá')} žánry</b>
+    <span>Přiřadí je AI podle názvu, autora a děje. Za celou knihovnu méně než 1 Kč.</span></div><button class="mini primary" id="tag-all">Přiřadit</button></div>`;
+}
 function viewWishlist() {
-  const w = S.books.filter((b) => b.list === 'wishlist' && matchQ(b, S.wishQuery));
-  const all = S.books.filter((b) => b.list === 'wishlist').length;
+  const w = S.books.filter((b) => b.list === 'wishlist');
   return `<div class="top"><div><h1>Wishlist</h1><p class="sub">Knihy, které chceš. Přátelé je uvidí, až budou vybírat dárek.</p></div></div>
-    ${all ? `<input class="search" id="wq" type="search" placeholder="Hledat ve wishlistu" value="${esc(S.wishQuery)}">${bookGrid(w)}`
+    ${w.length ? controlsHtml('wishlist', w, { chips: false, placeholder: 'Hledat ve wishlistu' })
     : `<div class="empty"><h3>Zatím nic nechceš?</h3><p>Při přidávání knihy zvol „Wishlist“ místo „Knihovna“.</p><br><button class="btn primary" data-go="add" data-list="wishlist">${I.heart}Přidat do wishlistu</button></div>`}`;
 }
 function viewAdd() {
@@ -469,24 +592,20 @@ function viewFriends() {
 }
 function viewFriend() {
   const p = S.friend;
-  const list = S.friendBooks.filter((b) => b.list === S.friendTab);
+  const all = S.friendBooks.filter((b) => b.list === S.friendTab);
   const chip = (k, l) => `<button class="chip ${S.friendTab === k ? 'on' : ''}" data-ft="${k}">${l}</button>`;
   return `<button class="back" id="back">${I.left}Přátelé</button>
     <div class="top"><div><h1>${esc(p.display_name)}</h1><p class="sub">@${esc(p.username)} · ${S.friendBooks.filter((b) => b.list === 'library').length} knih</p></div><div class="av">${esc(initials(p.display_name))}</div></div>
     <div class="chips">${chip('library', 'Knihovna')}${chip('wishlist', 'Wishlist')}</div>
-    ${list.length ? bookGrid(list, false) : `<div class="empty">${S.friendTab === 'wishlist' ? 'Wishlist je zatím prázdný.' : 'Knihovna je zatím prázdná.'}</div>`}`;
+    ${all.length ? controlsHtml('friend', all, { chips: false, placeholder: 'Hledat' }) : `<div class="empty">${S.friendTab === 'wishlist' ? 'Wishlist je zatím prázdný.' : 'Knihovna je zatím prázdná.'}</div>`}`;
 }
 const plural = (n, a, b, c) => (n === 1 ? a : n >= 2 && n <= 4 ? b : c);
 
 function bindView() {
   $app.querySelectorAll('[data-go]').forEach((b) => (b.onclick = () => { S.view = b.dataset.go; S.defaultList = b.dataset.list || 'library'; render(); }));
-  $app.querySelectorAll('.book').forEach((b) => (b.onclick = () => openBook(b.dataset.id, b.dataset.own === '1')));
-  $app.querySelectorAll('[data-f]').forEach((b) => (b.onclick = () => { S.filter = b.dataset.f; render(); }));
-  $app.querySelectorAll('[data-ft]').forEach((b) => (b.onclick = () => { S.friendTab = b.dataset.ft; render(); }));
-  const q = document.getElementById('q');
-  if (q) q.oninput = () => { S.query = q.value; const pos = q.selectionStart; render(); const n = document.getElementById('q'); n.focus(); n.setSelectionRange(pos, pos); };
-  const wq = document.getElementById('wq');
-  if (wq) wq.oninput = () => { S.wishQuery = wq.value; const pos = wq.selectionStart; render(); const n = document.getElementById('wq'); n.focus(); n.setSelectionRange(pos, pos); };
+  $app.querySelectorAll('[data-ft]').forEach((b) => (b.onclick = () => { S.friendTab = b.dataset.ft; UI.friend.genre = ''; render(); }));
+  bindControls();
+  const ta = document.getElementById('tag-all'); if (ta) ta.onclick = () => tagMany(S.books.filter((b) => !b.tagged_at));
   const meBtn = document.getElementById('me'); if (meBtn) meBtn.onclick = openAccount;
   const ea = document.getElementById('enr-all'); if (ea) ea.onclick = () => { enrichMany(S.books.filter((b) => !b.enriched_at)); render(); };
   const back = document.getElementById('back'); if (back) back.onclick = () => { S.friend = null; render(); };
@@ -545,7 +664,7 @@ async function invite() {
 }
 async function openFriend(id) {
   const { data } = await sb.from('books').select('*').eq('owner_id', id).order('created_at', { ascending: false });
-  S.friend = S.profilesById[id]; S.friendBooks = data || []; S.friendTab = 'library'; render(); window.scrollTo(0, 0);
+  S.friend = S.profilesById[id]; S.friendBooks = data || []; S.friendTab = 'library'; UI.friend = { q: '', filter: 'all', genre: '' }; render(); window.scrollTo(0, 0);
 }
 
 /* ---------- Sheets ---------- */
@@ -576,7 +695,9 @@ async function openBook(id, own) {
     <div class="detail"><div id="dcv">${coverHtml(b)}${b.cover_is_original && safeUrl(b.cover_url) ? '<p class="cover-note">Obálka originálu</p>' : ''}</div><div><h2>${esc(b.title)}</h2><p class="sub">${esc([b.author, b.year].filter(Boolean).join(' · '))}</p>
       ${meta ? `<p class="sub" style="font-size:12px">${esc(meta)}</p>` : ''}
       ${b.rating ? `<div class="stars" style="font-size:18px">${starsTxt(b.rating)}</div>` : ''}
-      <span class="pill ${b.list === 'wishlist' ? 'wine' : ''}">${b.list === 'wishlist' ? 'Wishlist' : STATUS[b.status]}</span></div></div>
+      <span class="pill ${b.list === 'wishlist' ? 'wine' : ''}">${b.list === 'wishlist' ? 'Wishlist' : STATUS[b.status]}</span>
+      ${b.loan_type ? `<span class="pill wine">${esc(loanText(b))}</span>` : ''}</div></div>
+    ${(b.tags || []).length ? `<div class="tags-row">${b.tags.map((t) => `<button class="tag big" data-tag="${esc(t)}">${esc(t)}</button>`).join('')}</div>` : ''}
     ${b.description ? `<label class="f">O čem to je</label><p class="desc">${esc(b.description)}</p>`
       : own ? `<div class="card" style="padding:10px 12px;margin-top:10px"><p class="sub" style="margin-bottom:8px">${pending ? 'Děj a údaje se právě dohledávají…' : 'Děj ani podrobnosti zatím nemáme.'}</p>
         ${pending ? '' : `<button class="mini primary" id="enr">Dohledat děj a údaje</button>`}</div>` : ''}
@@ -591,6 +712,13 @@ async function openBook(id, own) {
       : (iHave ? `<p class="hint" style="text-align:center">Tuhle knihu už máš.</p>` : `<button class="btn wine" id="want">${I.heart}Chci ji taky (do wishlistu)</button>`)}
     </div>
     ${friendsHave.length ? `<label class="f" style="margin-top:16px">Mají ji i přátelé</label><div class="friends-have">${friendsHave.map((p) => `<span class="av sm" title="${esc(p.display_name)}">${esc(initials(p.display_name))}</span>`).join('')}</div>` : ''}`);
+  el.querySelectorAll('[data-tag]').forEach((t) => (t.onclick = () => {
+    close();
+    const key = own ? (b.list === 'wishlist' ? 'wishlist' : 'library') : 'friend';
+    UI[key] = { q: '', filter: 'all', genre: t.dataset.tag };
+    if (own) S.view = key; else S.friendTab = b.list;
+    render(); window.scrollTo(0, 0);
+  }));
   if (!b.gr_url) resolveGoodreads(b).then(async (u) => {
     if (!u) return;
     const a = el.querySelector('#gr'); if (a) a.href = u;
@@ -633,7 +761,9 @@ async function openBook(id, own) {
 }
 
 function openEditor(data, isNew = false, photoFile = null) {
-  const d = { list: S.defaultList || 'library', status: 'unread', rating: null, note: '', ...data };
+  const d = { list: S.defaultList || 'library', status: 'unread', rating: null, note: '', loan_type: null, loan_person: '', ...data };
+  d.tags = [...(data.tags || [])];
+  const allTags = [...new Set([...GENRES, ...S.books.flatMap((b) => b.tags || [])])].sort(cmpCs);
   const { el, close } = sheet(`${head(isNew ? 'Nová kniha' : 'Upravit knihu')}
     <form id="bf" novalidate>
       <div class="detail"><div id="cv" style="width:80px;flex-shrink:0">${coverHtml(d)}</div>
@@ -645,7 +775,12 @@ function openEditor(data, isNew = false, photoFile = null) {
       <div id="libonly" ${d.list === 'wishlist' ? 'hidden' : ''}>
         <label class="f">Stav</label><div class="seg" id="ss">${Object.entries(STATUS).map(([k, l]) => `<button type="button" data-k="${k}" class="${d.status === k ? 'on' : ''}">${l}</button>`).join('')}</div>
         <label class="f">Hodnocení</label><div class="rate" id="rt">${[1, 2, 3, 4, 5].map((n) => `<button type="button" data-n="${n}" class="${d.rating >= n ? 'on' : ''}" aria-label="${n} z 5">★</button>`).join('')}</div>
+        <label class="f">Půjčování</label><div class="seg" id="ln">${[[null, 'Doma'], ['lent', 'Půjčila jsem'], ['borrowed', 'Vypůjčená']].map(([k, l]) => `<button type="button" data-k="${k || ''}" class="${(d.loan_type || '') === (k || '') ? 'on' : ''}">${l}</button>`).join('')}</div>
+        <input class="inp" id="lp" style="margin-top:8px" maxlength="100" value="${esc(d.loan_person || '')}" placeholder="${d.loan_type === 'borrowed' ? 'Od koho' : 'Komu'}" ${d.loan_type ? '' : 'hidden'}>
       </div>
+      <label class="f">Žánry</label><div class="tags-edit" id="tg"></div>
+      <div class="row" style="margin-top:6px"><input class="inp" id="tgi" list="tg-list" placeholder="Přidat žánr" maxlength="40"><button type="button" class="mini" id="tga" style="padding:10px 14px">Přidat</button></div>
+      <datalist id="tg-list">${allTags.map((t) => `<option value="${esc(t)}">`).join('')}</datalist>
       <label class="f" for="bn">Poznámka</label><textarea class="inp" id="bn" maxlength="2000" placeholder="Komu jsem ji půjčila, co se mi líbilo…">${esc(d.note || '')}</textarea>
       ${photoFile && !safeUrl(d.cover_url) ? `<p class="hint">Jako obálku použijeme tvoji fotku.</p>` : ''}
       <div class="err" id="berr"></div>
@@ -655,6 +790,28 @@ function openEditor(data, isNew = false, photoFile = null) {
   el.querySelectorAll('#sl button').forEach((b) => (b.onclick = () => { d.list = b.dataset.k; el.querySelectorAll('#sl button').forEach((x) => x.classList.toggle('on', x === b)); el.querySelector('#libonly').hidden = d.list === 'wishlist'; }));
   el.querySelectorAll('#ss button').forEach((b) => (b.onclick = () => { d.status = b.dataset.k; el.querySelectorAll('#ss button').forEach((x) => x.classList.toggle('on', x === b)); }));
   el.querySelectorAll('#rt button').forEach((b) => (b.onclick = () => { const n = +b.dataset.n; d.rating = d.rating === n ? null : n; el.querySelectorAll('#rt button').forEach((x) => x.classList.toggle('on', d.rating >= +x.dataset.n)); }));
+  const lp = el.querySelector('#lp');
+  el.querySelectorAll('#ln button').forEach((b) => (b.onclick = () => {
+    d.loan_type = b.dataset.k || null; el.querySelectorAll('#ln button').forEach((x) => x.classList.toggle('on', x === b));
+    lp.hidden = !d.loan_type; lp.placeholder = d.loan_type === 'borrowed' ? 'Od koho' : 'Komu'; if (d.loan_type) lp.focus();
+  }));
+  const tg = el.querySelector('#tg'), tgi = el.querySelector('#tgi');
+  const drawTags = () => {
+    tg.innerHTML = d.tags.length ? d.tags.map((t, i) => `<span class="tag big">${esc(t)}<button type="button" data-ti="${i}" aria-label="Odebrat ${esc(t)}">×</button></span>`).join('') : '<span class="sub" style="font-size:13px">Zatím žádné</span>';
+    tg.querySelectorAll('[data-ti]').forEach((x) => (x.onclick = () => { d.tags.splice(+x.dataset.ti, 1); d.tagsEdited = true; drawTags(); }));
+  };
+  const addTag = () => {
+    const v = tgi.value.trim().replace(/\s+/g, ' ');
+    if (!v) return;
+    const known = allTags.find((t) => normT(t) === normT(v));
+    const t = known || v.charAt(0).toUpperCase() + v.slice(1);
+    if (!d.tags.some((x) => normT(x) === normT(t)) && d.tags.length < 12) d.tags.push(t);
+    tgi.value = ''; d.tagsEdited = true; drawTags();
+  };
+  el.querySelector('#tga').onclick = addTag;
+  tgi.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addTag(); } };
+  tgi.onchange = () => { if (allTags.includes(tgi.value)) addTag(); };
+  drawTags();
   const del = el.querySelector('#bd');
   if (del) del.onclick = async () => {
     if (!confirm('Opravdu smazat „' + d.title + '“?')) return;
@@ -676,7 +833,11 @@ function openEditor(data, isNew = false, photoFile = null) {
       title, author: el.querySelector('#ba').value.trim() || null, isbn: isbn || null, year: yearS ? +yearS : null,
       list: d.list, status: d.list === 'wishlist' ? 'unread' : d.status, rating: d.list === 'wishlist' ? null : d.rating,
       note: el.querySelector('#bn').value.trim() || null, cover_url,
+      loan_type: d.list === 'wishlist' ? null : d.loan_type, loan_person: d.list === 'wishlist' || !d.loan_type ? null : (lp.value.trim() || null),
+      tags: d.tags,
     };
+    if (tgi.value.trim()) addTag(), (row.tags = d.tags);
+    if (d.tagsEdited || (isNew && d.tags.length)) row.tagged_at = new Date().toISOString();
     if (isNew && row.isbn && S.books.some((b) => b.isbn === row.isbn) && !confirm('Tuhle knihu už máš. Přidat ji znovu?')) { btn.disabled = false; return; }
     const { data: saved, error } = isNew ? await sb.from('books').insert(row).select() : await sb.from('books').update(row).eq('id', d.id).select();
     btn.disabled = false;
@@ -686,6 +847,7 @@ function openEditor(data, isNew = false, photoFile = null) {
     if (isNew) S.view = row.list === 'wishlist' ? 'wishlist' : 'library';
     render();
     if (isNew && saved?.[0] && !saved[0].description) enrichMany([saved[0]]);
+    else if (isNew && saved?.[0] && !saved[0].tagged_at) tagMany([saved[0]]);
   };
 }
 
