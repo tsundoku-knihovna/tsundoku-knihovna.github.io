@@ -109,3 +109,11 @@ a.btn{text-decoration:none;color:inherit}
 .shelf-row{align-items:flex-start}
 .shelf-row input[type=checkbox]{width:20px;height:20px;margin-top:9px;accent-color:var(--green);flex-shrink:0}
 .shelf-row.off .grow{opacity:.45}
+.desc{font-size:15px;line-height:1.6;margin:0}
+.banner{display:flex;gap:12px;align-items:center;padding:12px 14px;margin-bottom:16px;background:var(--green-soft);border-color:var(--green-soft)}
+.banner .grow{flex:1;min-width:0}.banner b{display:block;font-weight:600;font-size:14px}.banner span{font-size:13px;color:var(--ink-2)}
+#enrich-bar{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(var(--nav-h) + var(--safe-b) + 10px);background:var(--green);color:var(--paper);padding:8px 14px;border-radius:99px;font-size:13px;display:flex;gap:8px;align-items:center;z-index:30;white-space:nowrap}
+#enrich-bar .spin{width:14px;height:14px}
+.detail .row .btn{flex:1}
+.stack .row{gap:10px}
+.stack .row .btn{flex:1;padding:12px 10px}

@@ -43,6 +43,10 @@ function coverHtml(b) {
   return `<div class="cover" style="background:${coverColor(b.title)}">${esc(b.title)}</div>`;
 }
 
+function dbkUrl(b) {
+  if (/^https:\/\/(www\.)?databazeknih\.cz\//.test(b.dbk_url || '')) return b.dbk_url;
+  return 'https://www.databazeknih.cz/search?q=' + encodeURIComponent([b.title, b.author].filter(Boolean).join(' '));
+}
 function goodreadsUrl(b) {
   const q = b.isbn || [b.title, b.author].filter(Boolean).join(' ');
   return 'https://www.goodreads.com/search?q=' + encodeURIComponent(q);
@@ -95,6 +99,75 @@ function deepErrorText(code) {
   if (code === 'limit') return 'Dnešní limit důkladného hledání je vyčerpaný. Zkus to zítra, nebo knihu zadej ručně.';
   if (code === 'no_key') return 'Důkladné hledání zatím není zapnuté.';
   return 'Důkladné hledání se nepovedlo. Zkus to znovu, nebo knihu zadej ručně.';
+}
+
+/* ---------- Enrichment: year, ISBN, publisher, plot, cover ---------- */
+const imgExists = (url) => new Promise((res) => {
+  if (!url) return res(false);
+  const i = new Image(); const t = setTimeout(() => res(false), 8000);
+  i.onload = () => { clearTimeout(t); res(i.naturalWidth > 10); }; i.onerror = () => { clearTimeout(t); res(false); }; i.src = url;
+});
+async function findCover(isbn, title, author) {
+  if (isbn) { const u = olCover(isbn); if (await imgExists(u)) return u; }
+  try {
+    const hits = await searchBooks([title, author].filter(Boolean).join(' '));
+    const nt = normT(title);
+    const m = hits.find((h) => h.cover_url && (isbn ? h.isbn === isbn : normT(h.title).startsWith(nt.slice(0, 10))));
+    if (m && await imgExists(m.cover_url)) return m.cover_url;
+  } catch (e) {}
+  return null;
+}
+// Fills only what is missing; never overwrites what the user typed. Returns 'ok' or an error code.
+async function enrichBook(b) {
+  const { data, error } = await sb.functions.invoke('enrich-book', { body: { title: b.title, author: b.author, isbn: b.isbn, year: b.year } });
+  let code = null;
+  if (error) { try { code = (await error.context.json()).error; } catch (e) {} code = code || 'failed'; }
+  const r = data || {};
+  const up = { enriched_at: new Date().toISOString() };
+  if (!error) {
+    if (r.author && (!b.author || (r.author.length > b.author.length && normT(r.author).includes(normT(b.author))))) up.author = r.author;
+    if (!b.year && r.year) up.year = r.year;
+    if (!b.isbn && r.isbn) up.isbn = r.isbn;
+    if (!b.publisher && r.publisher) up.publisher = r.publisher;
+    if (!b.original_title && r.original_title && normT(r.original_title) !== normT(b.title)) up.original_title = r.original_title;
+    if (!b.description && r.description) up.description = r.description;
+    if (!b.dbk_url && r.dbk_url) up.dbk_url = r.dbk_url;
+  }
+  if (!safeUrl(b.cover_url)) { const c = await findCover(up.isbn || b.isbn, b.title, up.author || b.author); if (c) up.cover_url = c; }
+  if (code === 'limit' || code === 'no_key') return code;
+  const { error: e2 } = await sb.from('books').update(up).eq('id', b.id);
+  if (!e2) Object.assign(b, up);
+  return error ? code : 'ok';
+}
+const enrichState = { ids: new Set(), total: 0, done: 0 };
+function enrichBanner() {
+  let el = document.getElementById('enrich-bar');
+  if (!enrichState.ids.size) { if (el) el.remove(); return; }
+  if (!el) { el = document.createElement('div'); el.id = 'enrich-bar'; document.body.appendChild(el); }
+  el.innerHTML = `<div class="spin"></div>Dohledávám děj a údaje… ${enrichState.done}/${enrichState.total}`;
+}
+// Runs in the background (3 at a time) so the user can keep working.
+async function enrichMany(books) {
+  const todo = books.filter((b) => b && !enrichState.ids.has(b.id));
+  if (!todo.length) return;
+  todo.forEach((b) => enrichState.ids.add(b.id));
+  enrichState.total += todo.length; enrichBanner();
+  let stop = null;
+  const queue = [...todo];
+  await Promise.all(Array.from({ length: 3 }, async () => {
+    while (queue.length && !stop) {
+      const b = queue.shift();
+      const r = await enrichBook(b);
+      if (r === 'limit' || r === 'no_key') stop = r;
+      enrichState.ids.delete(b.id); enrichState.done++; enrichBanner();
+    }
+  }));
+  queue.forEach((b) => enrichState.ids.delete(b.id));
+  if (!enrichState.ids.size) { enrichState.total = 0; enrichState.done = 0; enrichBanner(); }
+  if (stop) toast(deepErrorText(stop));
+  else if (!enrichState.ids.size) toast('Děj a údaje jsou doplněné');
+  await loadBooks();
+  if (!$sheet.innerHTML) render();
 }
 
 async function lookupIsbnCatalogs(isbn) {
@@ -266,10 +339,18 @@ function viewLibrary() {
   const chip = (k, l) => `<button class="chip ${S.filter === k ? 'on' : ''}" data-f="${k}">${l}</button>`;
   return `<div class="top"><div><h1>Tsundoku</h1><p class="sub">${lib.length} ${plural(lib.length, 'kniha', 'knihy', 'knih')} · ${readYear} přečteno letos</p></div>
     <button class="icon-btn" id="me" aria-label="Můj účet">${I.user}</button></div>
+    ${missingBanner()}
     ${lib.length ? `<input class="search" id="q" type="search" placeholder="Hledat v knihovně" value="${esc(S.query)}">
     <div class="chips">${chip('all', 'Vše')}${chip('reading', 'Čtu')}${chip('read', 'Přečteno')}${chip('unread', 'Nepřečteno')}</div>
     ${list.length ? bookGrid(list) : `<div class="empty">Nic tu neodpovídá hledání.</div>`}`
     : `<div class="empty"><h3>Začni plnit knihovnu</h3><p>Naskenuj čárový kód na zadní straně knihy nebo vyfoť obálku.</p><br><button class="btn primary" data-go="add">${I.scan}Přidat první knihu</button></div>`}`;
+}
+function missingBanner() {
+  const miss = S.books.filter((b) => !b.enriched_at && !enrichState.ids.has(b.id));
+  if (!miss.length || enrichState.ids.size) return '';
+  const kc = Math.max(1, Math.round(miss.length * 0.5));
+  return `<div class="card banner"><div class="grow"><b>U ${miss.length} ${plural(miss.length, 'knihy', 'knih', 'knih')} chybí děj a údaje</b>
+    <span>Rok, nakladatel, obálka a o čem kniha je. Asi ${kc} Kč celkem.</span></div><button class="mini primary" id="enr-all">Doplnit</button></div>`;
 }
 function viewWishlist() {
   const w = S.books.filter((b) => b.list === 'wishlist' && matchQ(b, S.wishQuery));
@@ -327,6 +408,7 @@ function bindView() {
   const wq = document.getElementById('wq');
   if (wq) wq.oninput = () => { S.wishQuery = wq.value; const pos = wq.selectionStart; render(); const n = document.getElementById('wq'); n.focus(); n.setSelectionRange(pos, pos); };
   const meBtn = document.getElementById('me'); if (meBtn) meBtn.onclick = openAccount;
+  const ea = document.getElementById('enr-all'); if (ea) ea.onclick = () => { enrichMany(S.books.filter((b) => !b.enriched_at)); render(); };
   const back = document.getElementById('back'); if (back) back.onclick = () => { S.friend = null; render(); };
 
   if (S.view === 'add') {
@@ -408,26 +490,56 @@ async function openBook(id, own) {
     const { data } = await q; friendsHave = [...new Set((data || []).map((x) => x.owner_id))].map((i) => S.profilesById[i]).filter(Boolean);
   }
   const iHave = !own && S.books.some((x) => (b.isbn && x.isbn === b.isbn) || x.title.toLowerCase() === b.title.toLowerCase());
+  const pending = own && enrichState.ids.has(b.id);
+  const meta = [b.publisher, b.original_title && `orig. ${b.original_title}`].filter(Boolean).join(' · ');
   const { el, close } = sheet(`${head('')}
-    <div class="detail">${coverHtml(b)}<div><h2>${esc(b.title)}</h2><p class="sub">${esc([b.author, b.year].filter(Boolean).join(' · '))}</p>
+    <div class="detail"><div id="dcv">${coverHtml(b)}</div><div><h2>${esc(b.title)}</h2><p class="sub">${esc([b.author, b.year].filter(Boolean).join(' · '))}</p>
+      ${meta ? `<p class="sub" style="font-size:12px">${esc(meta)}</p>` : ''}
       ${b.rating ? `<div class="stars" style="font-size:18px">${starsTxt(b.rating)}</div>` : ''}
       <span class="pill ${b.list === 'wishlist' ? 'wine' : ''}">${b.list === 'wishlist' ? 'Wishlist' : STATUS[b.status]}</span></div></div>
+    ${b.description ? `<label class="f">O čem to je</label><p class="desc">${esc(b.description)}</p>`
+      : own ? `<div class="card" style="padding:10px 12px;margin-top:10px"><p class="sub" style="margin-bottom:8px">${pending ? 'Děj a údaje se právě dohledávají…' : 'Děj ani podrobnosti zatím nemáme.'}</p>
+        ${pending ? '' : `<button class="mini primary" id="enr">Dohledat děj a údaje</button>`}</div>` : ''}
     ${b.note ? `<label class="f">${own ? 'Moje poznámka' : 'Poznámka'}</label><div class="card" style="padding:10px 12px;font-size:14px;white-space:pre-wrap">${esc(b.note)}</div>` : ''}
     <div class="stack" style="margin-top:16px">
-      <a class="btn" href="${esc(goodreadsUrl(b))}" target="_blank" rel="noopener">${I.ext}Otevřít na Goodreads</a>
+      <div class="row"><a class="btn" href="${esc(goodreadsUrl(b))}" target="_blank" rel="noopener">${I.ext}Goodreads</a>
+        <a class="btn" href="${esc(dbkUrl(b))}" target="_blank" rel="noopener">${I.ext}Databáze knih</a></div>
       ${own ? `<button class="btn primary" id="ed">${I.edit}Upravit, hodnotit</button>
+        <button class="btn" id="cph">${I.camera}${safeUrl(b.cover_url) ? 'Vyměnit obálku za vlastní fotku' : 'Vyfotit obálku'}</button>
+        <input type="file" id="cph-in" accept="image/*" capture="environment" hidden>
         ${b.list === 'wishlist' ? `<button class="btn" id="mv">${I.books}Mám ji, přesunout do knihovny</button>` : ''}`
       : (iHave ? `<p class="hint" style="text-align:center">Tuhle knihu už máš.</p>` : `<button class="btn wine" id="want">${I.heart}Chci ji taky (do wishlistu)</button>`)}
     </div>
     ${friendsHave.length ? `<label class="f" style="margin-top:16px">Mají ji i přátelé</label><div class="friends-have">${friendsHave.map((p) => `<span class="av sm" title="${esc(p.display_name)}">${esc(initials(p.display_name))}</span>`).join('')}</div>` : ''}`);
   if (own) {
     el.querySelector('#ed').onclick = () => { close(); openEditor(b); };
+    const enr = el.querySelector('#enr');
+    if (enr) enr.onclick = async () => {
+      enr.disabled = true; enr.textContent = 'Hledám… (asi 10 s)';
+      const r = await enrichBook(b);
+      close();
+      if (r === 'limit' || r === 'no_key') toast(deepErrorText(r));
+      else if (r !== 'ok') toast('Podrobnosti se nepodařilo najít. Můžeš je doplnit ručně.');
+      render(); openBook(b.id, true);
+    };
+    const cph = el.querySelector('#cph'), cin = el.querySelector('#cph-in');
+    cph.onclick = () => cin.click();
+    cin.onchange = async () => {
+      const f = cin.files[0]; if (!f) return;
+      cph.disabled = true; cph.textContent = 'Nahrávám fotku…';
+      let url = null;
+      try { url = await uploadCover(await resizeImage(f, 900)); } catch (e) {}
+      if (!url) { cph.disabled = false; return toast('Fotku se nepodařilo nahrát.'); }
+      await sb.from('books').update({ cover_url: url }).eq('id', b.id);
+      b.cover_url = url; close(); render(); openBook(b.id, true); toast('Obálka uložena');
+    };
     const mv = el.querySelector('#mv');
     if (mv) mv.onclick = async () => { await sb.from('books').update({ list: 'library' }).eq('id', b.id); await loadBooks(); close(); toast('Přesunuto do knihovny'); render(); };
   } else {
     const w = el.querySelector('#want');
     if (w) w.onclick = async () => {
-      const { error } = await sb.from('books').insert({ list: 'wishlist', title: b.title, author: b.author, isbn: b.isbn, year: b.year, cover_url: b.cover_url });
+      const { error } = await sb.from('books').insert({ list: 'wishlist', title: b.title, author: b.author, isbn: b.isbn, year: b.year, cover_url: b.cover_url,
+        description: b.description, publisher: b.publisher, original_title: b.original_title, dbk_url: b.dbk_url, enriched_at: b.enriched_at });
       if (error) return toast('Nepodařilo se uložit.');
       await loadBooks(); close(); toast('Přidáno do tvého wishlistu');
     };
@@ -480,13 +592,14 @@ function openEditor(data, isNew = false, photoFile = null) {
       note: el.querySelector('#bn').value.trim() || null, cover_url,
     };
     if (isNew && row.isbn && S.books.some((b) => b.isbn === row.isbn) && !confirm('Tuhle knihu už máš. Přidat ji znovu?')) { btn.disabled = false; return; }
-    const { error } = isNew ? await sb.from('books').insert(row) : await sb.from('books').update(row).eq('id', d.id);
+    const { data: saved, error } = isNew ? await sb.from('books').insert(row).select() : await sb.from('books').update(row).eq('id', d.id).select();
     btn.disabled = false;
     if (error) return (err.textContent = 'Nepodařilo se uložit. Zkus to znovu.');
     await loadBooks(); close();
     toast(isNew ? (row.list === 'wishlist' ? 'Přidáno do wishlistu' : 'Kniha je v knihovně') : 'Uloženo');
     if (isNew) S.view = row.list === 'wishlist' ? 'wishlist' : 'library';
     render();
+    if (isNew && saved?.[0] && !saved[0].description) enrichMany([saved[0]]);
   };
 }
 
@@ -668,11 +781,12 @@ function openShelfReview(found, unreadable) {
     const queue = [...work];
     await Promise.all(Array.from({ length: 4 }, async () => { while (queue.length) await queue.shift()(); }));
     btn.textContent = 'Ukládám…';
-    const { error } = await sb.from('books').insert(out);
+    const { data: saved, error } = await sb.from('books').insert(out).select();
     if (error) { btn.disabled = false; sync(); return (err.textContent = 'Nepodařilo se uložit. Zkus to znovu.'); }
     await loadBooks(); close();
     toast(`Přidáno ${pick.length} ${plural(pick.length, 'kniha', 'knihy', 'knih')}`);
     S.view = 'library'; render();
+    if (saved?.length) enrichMany(saved);
   };
 }
 
