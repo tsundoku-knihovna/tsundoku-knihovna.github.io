@@ -49,14 +49,36 @@ function dbkUrl(b) {
   if (/^https:\/\/(www\.)?databazeknih\.cz\//.test(b.dbk_url || '')) return b.dbk_url;
   return 'https://www.databazeknih.cz/search?q=' + encodeURIComponent([b.title, b.author].filter(Boolean).join(' '));
 }
-// Goodreads: for translations search the original title + author (Flynnová → Flynn), so it opens the original book.
+// Goodreads. Best: a direct book page (gr_url, found via Open Library's Goodreads IDs). Fallback: a search
+// for the ORIGINAL title + author (Czech ISBNs and titles are mostly unknown to Goodreads).
+const grSurname = (a) => ((a || '').split(/[ ,]+/).filter(Boolean).pop() || '').replace(/ov[áa]$/i, '');
+const isCzIsbn = (i) => /^(97[89])?80/.test(i || '');
 function goodreadsUrl(b) {
-  let q;
-  if (b.original_title && normT(b.original_title) !== normT(b.title)) {
-    const surname = ((b.author || '').split(/[ ,]+/).filter(Boolean).pop() || '').replace(/ov[áa]$/i, '');
-    q = [b.original_title, surname].filter(Boolean).join(' ');
-  } else q = b.isbn || [b.title, b.author].filter(Boolean).join(' ');
-  return 'https://www.goodreads.com/search?q=' + encodeURIComponent(q);
+  if (/^https:\/\/www\.goodreads\.com\/book\/show\/\d/.test(b.gr_url || '')) return b.gr_url;
+  const orig = b.original_title && normT(b.original_title) !== normT(b.title) ? b.original_title : null;
+  if (!orig && b.isbn && !isCzIsbn(b.isbn)) return 'https://www.goodreads.com/book/isbn/' + b.isbn;
+  const q = orig ? [orig, grSurname(b.author)] : [b.title, grSurname(b.author)];
+  return 'https://www.goodreads.com/search?search_type=books&q=' + encodeURIComponent(q.filter(Boolean).join(' '));
+}
+async function resolveGoodreads(b) {
+  const tries = [];
+  const orig = b.original_title && normT(b.original_title) !== normT(b.title) ? b.original_title : null;
+  if (b.isbn) tries.push({ url: `https://openlibrary.org/search.json?isbn=${b.isbn}&fields=title,author_name,id_goodreads&limit=3`, title: null });
+  if (orig) tries.push({ url: `https://openlibrary.org/search.json?fields=title,author_name,id_goodreads&limit=8&title=${encodeURIComponent(orig)}&author=${encodeURIComponent(grSurname(b.author))}`, title: orig });
+  tries.push({ url: `https://openlibrary.org/search.json?fields=title,author_name,id_goodreads&limit=8&title=${encodeURIComponent(b.title)}&author=${encodeURIComponent(grSurname(b.author))}`, title: b.title });
+  const sn = normT(grSurname(b.author)).slice(0, 5);
+  for (const t of tries) {
+    try {
+      const r = await fetch(t.url); if (!r.ok) continue;
+      const docs = (await r.json()).docs || [];
+      const nt = t.title ? normT(t.title) : null;
+      const d = docs.find((d) => d.id_goodreads?.length
+        && (!nt || normT(d.title).startsWith(nt.slice(0, 12)) || nt.startsWith(normT(d.title).slice(0, 12)))
+        && (!sn || (d.author_name || []).some((a) => normT(a).includes(sn))));
+      if (d) return 'https://www.goodreads.com/book/show/' + d.id_goodreads[0];
+    } catch (e) {}
+  }
+  return null;
 }
 
 let toastT;
@@ -181,6 +203,7 @@ async function enrichBook(b) {
     if (!b.original_title && r.original_title && normT(r.original_title) !== normT(b.title)) up.original_title = r.original_title;
     if (!b.description && r.description) up.description = r.description;
     if (!b.dbk_url && r.dbk_url) up.dbk_url = r.dbk_url;
+    if (!b.gr_url && r.goodreads_url) up.gr_url = r.goodreads_url;
   }
   if (!safeUrl(b.cover_url)) {
     const c = await findCover(up.isbn || b.isbn, b.title, up.author || b.author);
@@ -190,6 +213,7 @@ async function enrichBook(b) {
       if (o) { up.cover_url = o; up.cover_is_original = true; }
     }
   }
+  if (!b.gr_url && !up.gr_url) { try { const g = await resolveGoodreads({ ...b, ...up }); if (g) up.gr_url = g; } catch (e) {} }
   if (code === 'limit' || code === 'no_key') return code;
   const { error: e2 } = await sb.from('books').update(up).eq('id', b.id);
   if (!e2) Object.assign(b, up);
@@ -558,7 +582,7 @@ async function openBook(id, own) {
         ${pending ? '' : `<button class="mini primary" id="enr">Dohledat děj a údaje</button>`}</div>` : ''}
     ${b.note ? `<label class="f">${own ? 'Moje poznámka' : 'Poznámka'}</label><div class="card" style="padding:10px 12px;font-size:14px;white-space:pre-wrap">${esc(b.note)}</div>` : ''}
     <div class="stack" style="margin-top:16px">
-      <div class="row"><a class="btn" href="${esc(goodreadsUrl(b))}" target="_blank" rel="noopener">${I.ext}Goodreads</a>
+      <div class="row"><a class="btn" id="gr" href="${esc(goodreadsUrl(b))}" target="_blank" rel="noopener">${I.ext}Goodreads</a>
         <a class="btn" href="${esc(dbkUrl(b))}" target="_blank" rel="noopener">${I.ext}Databáze knih</a></div>
       ${own ? `<button class="btn primary" id="ed">${I.edit}Upravit, hodnotit</button>
         <button class="btn" id="cph">${I.camera}${safeUrl(b.cover_url) ? 'Vyměnit obálku za vlastní fotku' : 'Vyfotit obálku'}</button>
@@ -567,6 +591,12 @@ async function openBook(id, own) {
       : (iHave ? `<p class="hint" style="text-align:center">Tuhle knihu už máš.</p>` : `<button class="btn wine" id="want">${I.heart}Chci ji taky (do wishlistu)</button>`)}
     </div>
     ${friendsHave.length ? `<label class="f" style="margin-top:16px">Mají ji i přátelé</label><div class="friends-have">${friendsHave.map((p) => `<span class="av sm" title="${esc(p.display_name)}">${esc(initials(p.display_name))}</span>`).join('')}</div>` : ''}`);
+  if (!b.gr_url) resolveGoodreads(b).then(async (u) => {
+    if (!u) return;
+    const a = el.querySelector('#gr'); if (a) a.href = u;
+    b.gr_url = u;
+    if (own) await sb.from('books').update({ gr_url: u }).eq('id', b.id);
+  });
   if (own) {
     el.querySelector('#ed').onclick = () => { close(); openEditor(b); };
     const enr = el.querySelector('#enr');
@@ -595,7 +625,7 @@ async function openBook(id, own) {
     const w = el.querySelector('#want');
     if (w) w.onclick = async () => {
       const { error } = await sb.from('books').insert({ list: 'wishlist', title: b.title, author: b.author, isbn: b.isbn, year: b.year, cover_url: b.cover_url,
-        description: b.description, publisher: b.publisher, cover_is_original: !!b.cover_is_original, original_title: b.original_title, dbk_url: b.dbk_url, enriched_at: b.enriched_at });
+        description: b.description, publisher: b.publisher, cover_is_original: !!b.cover_is_original, original_title: b.original_title, dbk_url: b.dbk_url, gr_url: b.gr_url, enriched_at: b.enriched_at });
       if (error) return toast('Nepodařilo se uložit.');
       await loadBooks(); close(); toast('Přidáno do tvého wishlistu');
     };
