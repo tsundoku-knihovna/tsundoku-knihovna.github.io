@@ -32,6 +32,7 @@ const I = {
   headphones: ic('<path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="14" width="5" height="7" rx="2"/><rect x="16" y="14" width="5" height="7" rx="2"/>'),
   grid: ic('<rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/>'),
   list: ic('<path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/>'),
+  plus: ic('<path d="M12 5v14M5 12h14"/>'),
   user: ic('<circle cx="12" cy="8" r="4"/><path d="M6 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/>'),
 };
 
@@ -479,7 +480,7 @@ function render() {
   else if (S.view === 'add') body = viewAdd();
   else if (S.view === 'friends') body = S.friend ? viewFriend() : viewFriends();
   $app.innerHTML = `<div class="wrap">${body}</div>${nav()}`;
-  $app.querySelectorAll('.nav button').forEach((b) => (b.onclick = () => { S.view = b.dataset.v; S.friend = null; render(); window.scrollTo(0, 0); }));
+  $app.querySelectorAll('.nav button').forEach((b) => (b.onclick = () => { S.view = b.dataset.v; S.friend = null; if (S.view === 'add') S.defaultList = 'library'; render(); window.scrollTo(0, 0); }));
   bindView();
 }
 
@@ -718,7 +719,8 @@ function tagBanner() {
 }
 function viewWishlist() {
   const w = S.books.filter((b) => b.list === 'wishlist');
-  return `<div class="top"><div><h1>Wishlist</h1><p class="sub">Knihy, které chceš. Přátelé je uvidí, až budou vybírat dárek.</p></div></div>
+  return `<div class="top"><div><h1>Wishlist</h1><p class="sub">Knihy, které chceš. Přátelé je uvidí, až budou vybírat dárek.</p></div>
+    <button class="add-btn" data-go="add" data-list="wishlist" aria-label="Přidat do wishlistu">${I.plus}<span>Přidat</span></button></div>
     ${w.length ? controlsHtml('wishlist', w, { chips: false, placeholder: 'Hledat ve wishlistu' })
     : `<div class="empty"><h3>Zatím nic nechceš?</h3><p>Při přidávání knihy zvol „Wishlist“ místo „Knihovna“.</p><br><button class="btn primary" data-go="add" data-list="wishlist">${I.heart}Přidat do wishlistu</button></div>`}`;
 }
@@ -726,6 +728,7 @@ function viewAdd() {
   const f = S.defaultFormat || 'book', audio = f === 'audio', ebook = f === 'ebook', digital = audio || ebook;
   const word = audio ? 'audioknih' : 'e-knih';
   return `<div class="top"><div><h1>${audio ? 'Přidat audioknihu' : ebook ? 'Přidat e-knihu' : 'Přidat knihu'}</h1><p class="sub">Údaje a obálku doplníme automaticky.</p></div></div>
+  ${S.defaultList === 'wishlist' ? `<div class="card banner wl"><div class="grow"><b>${I.heart} Přidáváš do wishlistu</b><span>Všechno, co teď přidáš, se uloží do wishlistu.</span></div><button class="mini" id="to-lib">Do knihovny</button></div>` : ''}
   <div class="seg fmtseg" style="margin-bottom:14px">${FORMATS.map(([k, , one]) => `<button type="button" data-addfmt="${k}" class="${f === k ? 'on' : ''}">${fmtIcon(k)}${one}</button>`).join('')}</div>
   <div class="add-opts">
     ${digital ? `<button class="add-opt" id="o-list"><div class="ic">${fmtIcon(f)}</div><div><b>Víc ${word} ze screenshotu</b><span>${audio ? 'Screenshot knihovny z Audiolibrixu, Storytelu…' : 'Screenshot knihovny z Kindlu, Palmknih, Kosmasu…'} AI vypíše všechny, seznam pak zkontroluješ.</span></div></button>`
@@ -776,6 +779,7 @@ function bindView() {
   const back = document.getElementById('back'); if (back) back.onclick = () => { S.friend = null; render(); };
 
   if (S.view === 'add') {
+    const tl = document.getElementById('to-lib'); if (tl) tl.onclick = () => { S.defaultList = 'library'; render(); };
     $app.querySelectorAll('[data-addfmt]').forEach((b) => (b.onclick = () => { S.defaultFormat = b.dataset.addfmt; render(); }));
     const osc = document.getElementById('o-scan'); if (osc) osc.onclick = openScanner;
     document.getElementById('o-search').onclick = () => openSearch();
@@ -959,10 +963,10 @@ function openEditor(data, isNew = false, photoFile = null) {
       <label class="f" for="bn">Poznámka</label><textarea class="inp" id="bn" maxlength="2000" placeholder="Komu jsem ji půjčila, co se mi líbilo…">${esc(d.note || '')}</textarea>
       ${photoFile && !safeUrl(d.cover_url) ? `<p class="hint">Jako obálku použijeme tvoji fotku.</p>` : ''}
       <div class="err" id="berr"></div>
-      <div class="stack" style="margin-top:8px"><button class="btn primary" type="submit">${isNew ? 'Uložit do knihovny' : 'Uložit změny'}</button>
+      <div class="stack" style="margin-top:8px"><button class="btn primary" type="submit" id="bsave">${isNew ? (d.list === 'wishlist' ? 'Uložit do wishlistu' : 'Uložit do knihovny') : 'Uložit změny'}</button>
       ${!isNew ? `<button type="button" class="btn danger" id="bd">Smazat knihu</button>` : ''}</div>
     </form>`);
-  el.querySelectorAll('#sl button').forEach((b) => (b.onclick = () => { d.list = b.dataset.k; el.querySelectorAll('#sl button').forEach((x) => x.classList.toggle('on', x === b)); el.querySelector('#libonly').hidden = d.list === 'wishlist'; }));
+  el.querySelectorAll('#sl button').forEach((b) => (b.onclick = () => { d.list = b.dataset.k; el.querySelectorAll('#sl button').forEach((x) => x.classList.toggle('on', x === b)); el.querySelector('#libonly').hidden = d.list === 'wishlist'; if (isNew) el.querySelector('#bsave').textContent = d.list === 'wishlist' ? 'Uložit do wishlistu' : 'Uložit do knihovny'; }));
   el.querySelectorAll('#ss button').forEach((b) => (b.onclick = () => { d.status = b.dataset.k; el.querySelectorAll('#ss button').forEach((x) => x.classList.toggle('on', x === b)); }));
   el.querySelectorAll('#rt button').forEach((b) => (b.onclick = () => { const n = +b.dataset.n; d.rating = d.rating === n ? null : n; el.querySelectorAll('#rt button').forEach((x) => x.classList.toggle('on', d.rating >= +x.dataset.n)); }));
   const syncFmt = () => {
@@ -1160,6 +1164,7 @@ async function recognizeShelf(file, mode = 'shelf') {
 
 function openShelfReview(found, unreadable, mode = 'shelf', source = null) {
   const format = mode === 'shelf' ? 'book' : mode, audio = format === 'audio';
+  const target = S.defaultList === 'wishlist' ? 'wishlist' : 'library';
   const owned = new Set(S.books.filter((b) => b.list === 'library' && (b.format || 'book') === format).map((b) => normT(b.title)));
   const rows = found.map((b) => ({ title: b.title, author: b.author || '', narrator: b.narrator || '', low: b.confidence === 'low', dup: owned.has(normT(b.title)) }));
   const known = SOURCES[format] || [];
@@ -1180,7 +1185,7 @@ function openShelfReview(found, unreadable, mode = 'shelf', source = null) {
   const list = el.querySelector('#sh-list');
   const sync = () => {
     const n = rows.filter((r) => r.on && r.title.trim()).length;
-    el.querySelector('#sh-save').textContent = n ? `Přidat do knihovny (${n})` : 'Vyber aspoň jednu';
+    el.querySelector('#sh-save').textContent = n ? `${target === 'wishlist' ? 'Přidat do wishlistu' : 'Přidat do knihovny'} (${n})` : 'Vyber aspoň jednu';
     el.querySelector('#sh-sum').textContent = format === 'audio' ? `Našli jsme ${rows.length} ${plural(rows.length, 'audioknihu', 'audioknihy', 'audioknih')}.`
       : format === 'ebook' ? `Našli jsme ${rows.length} ${plural(rows.length, 'e-knihu', 'e-knihy', 'e-knih')}.` : `Našli jsme ${rows.length} ${plural(rows.length, 'knihu', 'knihy', 'knih')}.`;
   };
@@ -1220,7 +1225,7 @@ function openShelfReview(found, unreadable, mode = 'shelf', source = null) {
         m = res.find((b) => (normT(b.title).startsWith(nt.slice(0, 10)) || nt.startsWith(normT(b.title).slice(0, 10))) && (!na || normT(b.author).includes(na.slice(-6))));
       } catch (e) {}
       const fullAuthor = m?.author && author && m.author.length > author.length && normT(m.author).includes(normT(author)) ? m.author : author;
-      out[i] = { list: 'library', format, narrator: audio ? (r.narrator || '').trim() || null : null, audio_source: format !== 'book' ? (el.querySelector('#sh-src').value.trim() || null) : null, status, language: m?.language || guessLang(title), title, author: fullAuthor || m?.author || null, isbn: m?.isbn || null, year: m?.year || null, cover_url: safeUrl(m?.cover_url) || null };
+      out[i] = { list: target, format, narrator: audio ? (r.narrator || '').trim() || null : null, audio_source: format !== 'book' ? (el.querySelector('#sh-src').value.trim() || null) : null, status, language: m?.language || guessLang(title), title, author: fullAuthor || m?.author || null, isbn: m?.isbn || null, year: m?.year || null, cover_url: safeUrl(m?.cover_url) || null };
       btn.textContent = `Doplňuji údaje… ${++done}/${pick.length}`;
     });
     const queue = [...work];
@@ -1230,7 +1235,7 @@ function openShelfReview(found, unreadable, mode = 'shelf', source = null) {
     if (error) { btn.disabled = false; sync(); return (err.textContent = 'Nepodařilo se uložit. Zkus to znovu.'); }
     await loadBooks(); close();
     toast(format === 'audio' ? `Přidáno ${pick.length} ${plural(pick.length, 'audiokniha', 'audioknihy', 'audioknih')}` : format === 'ebook' ? `Přidáno ${pick.length} ${plural(pick.length, 'e-kniha', 'e-knihy', 'e-knih')}` : `Přidáno ${pick.length} ${plural(pick.length, 'kniha', 'knihy', 'knih')}`);
-    S.view = 'library'; UI.library.format = format; render();
+    S.view = target; if (target === 'library') UI.library.format = format; render();
     if (saved?.length) enrichMany(saved);
   };
 }

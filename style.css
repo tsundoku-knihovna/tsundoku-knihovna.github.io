@@ -199,3 +199,8 @@ select.sel.inp{width:100%;flex:none;padding:10px 32px 10px 12px;font-size:16px}
 .pill.st-paused{background:#ECE7DF;color:#7A6F63}
 .pill.st-reading{background:#F5ECD3;color:#7A5B12}
 .fmtseg button{font-size:13px;gap:3px;padding:10px 2px}.fmtseg svg{width:15px;height:15px}
+.add-btn{display:flex;align-items:center;gap:6px;padding:9px 14px;border-radius:99px;background:var(--wine);color:var(--paper);font-weight:600;font-size:14px;flex-shrink:0}
+.add-btn svg{width:18px;height:18px}
+.banner.wl{background:var(--wine-soft);border-color:var(--wine-soft)}
+.banner.wl b{display:flex;align-items:center;gap:6px;color:var(--wine)}
+.banner.wl b svg{width:16px;height:16px}
