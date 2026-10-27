@@ -79,25 +79,48 @@ const acceptedFriends = () => S.friendships.filter((f) => f.status === 'accepted
 const incoming = () => S.friendships.filter((f) => f.status === 'pending' && f.addressee_id === me());
 
 /* ---------- Book lookup ---------- */
-async function lookupIsbn(isbn) {
-  isbn = isbn.replace(/[^0-9Xx]/g, '');
+const olCover = (isbn) => (isbn ? `https://covers.openlibrary.org/b/isbn/${isbn}-M.jpg?default=false` : null);
+
+// Thorough search: AI + web search on the server (Czech catalogues, databazeknih.cz…). Returns { results } or { error }.
+async function deepSearch(params) {
+  const { data, error } = await sb.functions.invoke('search-books', { body: params });
+  if (error) {
+    let code = '';
+    try { code = (await error.context.json()).error; } catch (e) {}
+    return { error: code || 'failed', results: [] };
+  }
+  return { results: (data.results || []).map((r) => ({ ...r, cover_url: olCover(r.isbn), ai: true })) };
+}
+function deepErrorText(code) {
+  if (code === 'limit') return 'Dnešní limit důkladného hledání je vyčerpaný. Zkus to zítra, nebo knihu zadej ručně.';
+  if (code === 'no_key') return 'Důkladné hledání zatím není zapnuté.';
+  return 'Důkladné hledání se nepovedlo. Zkus to znovu, nebo knihu zadej ručně.';
+}
+
+async function lookupIsbnCatalogs(isbn) {
   try {
     const r = await fetch('https://www.googleapis.com/books/v1/volumes?q=isbn:' + isbn);
-    const j = await r.json();
-    const v = j.items?.[0]?.volumeInfo;
-    if (v) return fromGoogle(v, isbn);
+    if (r.ok) { const v = (await r.json()).items?.[0]?.volumeInfo; if (v) return fromGoogle(v, isbn); }
   } catch (e) {}
   try {
     const r = await fetch(`https://openlibrary.org/api/books?bibkeys=ISBN:${isbn}&format=json&jscmd=data`);
-    const j = await r.json();
-    const v = j['ISBN:' + isbn];
+    const v = (await r.json())['ISBN:' + isbn];
     if (v) return {
       title: v.title, author: v.authors?.map((a) => a.name).join(', ') || null, isbn,
       year: parseInt(v.publish_date?.match(/\d{4}/)?.[0]) || null,
-      cover_url: v.cover?.medium || v.cover?.large || null,
+      cover_url: v.cover?.medium || v.cover?.large || olCover(isbn),
     };
   } catch (e) {}
   return null;
+}
+async function lookupIsbn(isbn, onDeep) {
+  isbn = isbn.replace(/[^0-9Xx]/g, '');
+  const hit = await lookupIsbnCatalogs(isbn);
+  if (hit) return hit;
+  onDeep && onDeep();
+  const d = await deepSearch({ isbn });
+  const exact = d.results.find((r) => r.isbn === isbn) || d.results[0];
+  return exact ? { ...exact, isbn } : null;
 }
 function fromGoogle(v, isbn) {
   const ids = v.industryIdentifiers || [];
@@ -105,13 +128,36 @@ function fromGoogle(v, isbn) {
   let cover = v.imageLinks?.thumbnail || v.imageLinks?.smallThumbnail || null;
   if (cover) cover = cover.replace('http://', 'https://').replace('&edge=curl', '');
   const is = isbn || i13 || null;
-  if (!cover && is) cover = `https://covers.openlibrary.org/b/isbn/${is}-M.jpg`;
+  if (!cover && is) cover = olCover(is);
   return { title: v.title + (v.subtitle ? ': ' + v.subtitle : ''), author: v.authors?.join(', ') || null, isbn: is, year: parseInt(v.publishedDate) || null, cover_url: cover };
 }
+async function searchGoogle(q) {
+  const r = await fetch('https://www.googleapis.com/books/v1/volumes?maxResults=10&q=' + encodeURIComponent(q));
+  if (!r.ok) return [];
+  return ((await r.json()).items || []).map((it) => fromGoogle(it.volumeInfo));
+}
+async function searchOpenLibrary(q) {
+  const r = await fetch('https://openlibrary.org/search.json?limit=10&fields=title,author_name,isbn,cover_i,first_publish_year&q=' + encodeURIComponent(q));
+  if (!r.ok) return [];
+  return ((await r.json()).docs || []).map((d) => {
+    const isbn = (d.isbn || []).find((x) => x.length === 13) || d.isbn?.[0] || null;
+    return {
+      title: d.title, author: d.author_name?.join(', ') || null, isbn, year: d.first_publish_year || null,
+      cover_url: d.cover_i ? `https://covers.openlibrary.org/b/id/${d.cover_i}-M.jpg` : olCover(isbn),
+    };
+  });
+}
+const normT = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]/g, '');
+// Fast free search across catalogues (Google Books + Open Library), merged and de-duplicated.
 async function searchBooks(q) {
-  const r = await fetch('https://www.googleapis.com/books/v1/volumes?maxResults=12&q=' + encodeURIComponent(q));
-  const j = await r.json();
-  return (j.items || []).map((it) => fromGoogle(it.volumeInfo));
+  const [g, o] = await Promise.allSettled([searchGoogle(q), searchOpenLibrary(q)]);
+  const all = [...(g.value || []), ...(o.value || [])];
+  const seen = new Set();
+  return all.filter((b) => {
+    if (!b.title) return false;
+    const k = b.isbn || normT(b.title) + '|' + normT(b.author);
+    if (seen.has(k)) return false; seen.add(k); return true;
+  }).slice(0, 12);
 }
 
 /* ---------- Auth ---------- */
@@ -235,11 +281,14 @@ function viewWishlist() {
 function viewAdd() {
   return `<div class="top"><div><h1>Přidat knihu</h1><p class="sub">Údaje a obálku doplníme automaticky.</p></div></div>
   <div class="add-opts">
+    <button class="add-opt" id="o-shelf"><div class="ic">${I.books}</div><div><b>Vyfotit celou poličku</b><span>Víc knih najednou podle hřbetů. Seznam pak zkontroluješ.</span></div></button>
     <button class="add-opt" id="o-scan"><div class="ic">${I.barcode}</div><div><b>Naskenovat čárový kód</b><span>Kód ISBN na zadní straně. Nejrychlejší.</span></div></button>
     <button class="add-opt" id="o-photo"><div class="ic">${I.camera}</div><div><b>Vyfotit obálku</b><span>Pro knihy bez kódu. Pozná ji AI.</span></div></button>
     <button class="add-opt" id="o-search"><div class="ic">${I.search}</div><div><b>Najít podle názvu</b><span>Nebo zadat úplně ručně.</span></div></button>
   </div>
-  <input type="file" id="photo-in" accept="image/*" capture="environment" hidden>`;
+  <input type="file" id="photo-in" accept="image/*" capture="environment" hidden>
+  <input type="file" id="shelf-in" accept="image/*" hidden>
+  <p class="hint" style="margin-top:16px">Tip pro poličku: foť zepředu, rovně a při dobrém světle, nejvýš jednu nebo dvě police najednou, aby byly hřbety čitelné.</p>`;
 }
 function viewFriends() {
   const inc = incoming();
@@ -286,6 +335,9 @@ function bindView() {
     const pin = document.getElementById('photo-in');
     document.getElementById('o-photo').onclick = () => pin.click();
     pin.onchange = () => { if (pin.files[0]) recognizePhoto(pin.files[0]); pin.value = ''; };
+    const sin = document.getElementById('shelf-in');
+    document.getElementById('o-shelf').onclick = () => sin.click();
+    sin.onchange = () => { if (sin.files[0]) recognizeShelf(sin.files[0]); sin.value = ''; };
   }
   if (S.view === 'friends' && !S.friend) {
     document.getElementById('invite').onclick = invite;
@@ -464,12 +516,23 @@ function openScanner() {
     }).catch(() => { el.querySelector('#reader').outerHTML = `<div class="card"><p class="sub">Kameru se nepodařilo spustit. Povol aplikaci přístup ke kameře, nebo opiš ISBN níže.</p></div>`; scanner = null; });
   } catch (e) { scanner = null; }
 }
+function loadingSheet(text) {
+  const s = sheet(`<div class="empty"><div class="spin" style="margin:0 auto 12px;color:var(--green)"></div><span id="ld">${esc(text)}</span></div>`);
+  s.set = (t) => { const n = s.el.querySelector('#ld'); if (n) n.textContent = t; };
+  return s;
+}
+const DEEP_MSG = 'V katalozích nic. Hledám důkladně na internetu, i v českých databázích (asi 10 s)…';
+const LANG = { cs: 'česky', en: 'anglicky', fr: 'francouzsky', de: 'německy', sk: 'slovensky' };
+function resultRows(items) {
+  return `<div class="list results">${items.map((b, i) => `<div class="li" data-i="${i}">${coverHtml(b)}<div class="grow"><b>${esc(b.title)}</b>
+    <span>${esc([b.author, b.year, b.publisher, LANG[b.language]].filter(Boolean).join(' · '))}</span></div></div>`).join('')}</div>`;
+}
 async function handleIsbn(isbn) {
-  const { close } = sheet(`<div class="empty"><div class="spin" style="margin:0 auto 12px;color:var(--green)"></div>Hledám knihu…</div>`);
-  const book = await lookupIsbn(isbn);
-  close();
+  const ld = loadingSheet('Hledám knihu…');
+  const book = await lookupIsbn(isbn, () => ld.set(DEEP_MSG));
+  ld.close();
   if (book) openEditor(book, true);
-  else { toast('Knihu jsme v katalogu nenašli. Doplň ji ručně.'); openEditor({ isbn: isbn.replace(/[^0-9Xx]/g, ''), title: '' }, true); }
+  else { toast('Knihu se nepodařilo najít. Doplň název a ulož.'); openEditor({ isbn: isbn.replace(/[^0-9Xx]/g, ''), title: '' }, true); }
 }
 
 /* ---------- Adding: photo + AI ---------- */
@@ -484,32 +547,135 @@ async function resizeImage(file, max = 1200) {
 const blobToB64 = (blob) => new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result.split(',')[1]); r.readAsDataURL(blob); });
 
 async function recognizePhoto(file) {
-  const { close } = sheet(`<div class="empty"><div class="spin" style="margin:0 auto 12px;color:var(--green)"></div>Poznávám knihu na fotce…</div>`);
+  const ld = loadingSheet('Čtu, co je na fotce…');
   let blob;
-  try { blob = await resizeImage(file); } catch (e) { close(); return toast('Fotku se nepodařilo načíst.'); }
+  try { blob = await resizeImage(file); } catch (e) { ld.close(); return toast('Fotku se nepodařilo načíst.'); }
   const image = await blobToB64(blob);
   const { data, error } = await sb.functions.invoke('recognize-cover', { body: { image, mediaType: 'image/jpeg' } });
   if (error) {
-    close();
+    ld.close();
     let code = '';
     try { code = (await error.context.json()).error; } catch (e) {}
     if (code === 'no_key') toast('Poznávání fotek zatím není zapnuté. Doplň knihu ručně.');
-    else if (code === 'not_recognized') toast('Knihu se nepodařilo poznat. Doplň ji ručně.');
+    else if (code === 'not_recognized') toast('Na fotce se nepodařilo přečíst název. Zkus ostřejší fotku, nebo knihu doplň ručně.');
+    else if (code === 'limit') toast(deepErrorText('limit'));
     else toast('Rozpoznání selhalo. Doplň knihu ručně.');
     return openEditor({ title: '' }, true, blob);
   }
-  let book = null;
-  if (data.isbn) book = await lookupIsbn(data.isbn);
-  if (!book) {
-    try {
-      const q = `intitle:${data.title}` + (data.author ? ` inauthor:${data.author.split(',')[0]}` : '');
-      const res = await searchBooks(q);
-      if (res[0]) book = { ...res[0], title: data.title, author: data.author || res[0].author };
-    } catch (e) {}
+  // What is printed on the cover is the truth for this edition; catalogues only add details.
+  const fromPhoto = { title: data.title, author: data.author, isbn: data.isbn, year: data.year };
+  let found = [];
+  if (data.isbn) {
+    ld.set('Hledám knihu podle ISBN…');
+    const b = await lookupIsbn(data.isbn, () => ld.set(DEEP_MSG));
+    if (b) { ld.close(); return openEditor({ ...b, title: data.title || b.title, author: data.author || b.author }, true, blob); }
   }
-  close();
-  openEditor(book || { title: data.title, author: data.author, isbn: data.isbn, year: data.year }, true, blob);
+  const q = [data.title, data.author].filter(Boolean).join(' ');
+  ld.set(`Na fotce je „${data.title}“. Hledám vydání…`);
+  try { found = await searchBooks(q); } catch (e) {}
+  const nt = normT(data.title);
+  found = found.filter((b) => normT(b.title).includes(nt.slice(0, 12)) || nt.includes(normT(b.title).slice(0, 12)));
+  if (!found.length) { ld.set(DEEP_MSG); found = (await deepSearch({ q })).results; }
+  ld.close();
+  if (!found.length) return openEditor(fromPhoto, true, blob);
+  pickEdition(found, fromPhoto, blob);
 }
+// After a photo: let the user choose which edition they have, or keep just what was read from the photo.
+function pickEdition(items, fromPhoto, blob) {
+  const { el, close } = sheet(`${head('Které vydání máš?')}
+    <p class="sub" style="margin-bottom:12px">Na fotce: <b>${esc(fromPhoto.title)}</b>${fromPhoto.author ? ' · ' + esc(fromPhoto.author) : ''}</p>
+    ${resultRows(items)}
+    <button class="btn" id="justphoto" style="margin-top:12px">Žádné z nich, jen podle fotky</button>`);
+  el.querySelectorAll('[data-i]').forEach((r) => (r.onclick = () => { close(); openEditor({ ...items[+r.dataset.i] }, true, blob); }));
+  el.querySelector('#justphoto').onclick = () => { close(); openEditor(fromPhoto, true, blob); };
+}
+/* ---------- Adding: whole shelf ---------- */
+async function recognizeShelf(file) {
+  const ld = loadingSheet('Čtu hřbety knih na fotce… (může to trvat až půl minuty)');
+  let blob;
+  try { blob = await resizeImage(file, 2000); } catch (e) { ld.close(); return toast('Fotku se nepodařilo načíst.'); }
+  const image = await blobToB64(blob);
+  const { data, error } = await sb.functions.invoke('recognize-shelf', { body: { image, mediaType: 'image/jpeg' } });
+  ld.close();
+  if (error) {
+    let code = '';
+    try { code = (await error.context.json()).error; } catch (e) {}
+    if (code === 'not_recognized') return toast('Na fotce se nepodařilo přečíst žádný hřbet. Zkus to blíž a při lepším světle.');
+    if (code === 'limit' || code === 'no_key') return toast(deepErrorText(code));
+    return toast('Rozpoznání poličky selhalo. Zkus to znovu.');
+  }
+  openShelfReview(data.books || [], data.unreadable || 0);
+}
+
+function openShelfReview(found, unreadable) {
+  const owned = new Set(S.books.filter((b) => b.list === 'library').map((b) => normT(b.title)));
+  const rows = found.map((b) => ({ title: b.title, author: b.author || '', low: b.confidence === 'low', dup: owned.has(normT(b.title)) }));
+  rows.forEach((r) => (r.on = !r.dup));
+  let status = 'unread';
+  const { el, close } = sheet(`${head('Knihy z poličky')}
+    <p class="sub" id="sh-sum"></p>
+    ${unreadable ? `<p class="hint">Dalších ${unreadable} ${plural(unreadable, 'hřbet', 'hřbety', 'hřbetů')} se přečíst nepodařilo. Přidej je pak ručně, nebo je vyfoť zblízka.</p>` : ''}
+    <p class="hint">Zkontroluj názvy, oprav, co nesedí, a odškrtni, co přidat nechceš.</p>
+    <div class="list" id="sh-list" style="margin-top:12px"></div>
+    <button class="btn ghost" id="sh-add" style="margin-top:8px">+ Přidat knihu ručně</button>
+    <label class="f">Stav pro všechny</label><div class="seg" id="sh-st">${Object.entries(STATUS).map(([k, l]) => `<button type="button" data-k="${k}" class="${k === status ? 'on' : ''}">${l}</button>`).join('')}</div>
+    <div class="err" id="sh-err"></div>
+    <button class="btn primary" id="sh-save" style="margin-top:8px"></button>`);
+  const list = el.querySelector('#sh-list');
+  const sync = () => {
+    const n = rows.filter((r) => r.on && r.title.trim()).length;
+    el.querySelector('#sh-save').textContent = n ? `Přidat do knihovny (${n})` : 'Vyber aspoň jednu knihu';
+    el.querySelector('#sh-sum').textContent = `Našli jsme ${rows.length} ${plural(rows.length, 'knihu', 'knihy', 'knih')}.`;
+  };
+  const draw = () => {
+    list.innerHTML = rows.map((r, i) => `<div class="li shelf-row ${r.on ? '' : 'off'}" data-r="${i}">
+      <input type="checkbox" ${r.on ? 'checked' : ''} aria-label="Přidat">
+      <div class="grow"><input class="inp sm" data-f="title" value="${esc(r.title)}" placeholder="Název" maxlength="300">
+        <input class="inp sm" data-f="author" value="${esc(r.author)}" placeholder="Autor" maxlength="300">
+        ${r.low ? '<span class="pill wine">Nejisté, zkontroluj</span> ' : ''}${r.dup ? '<span class="pill">Už ji máš</span>' : ''}</div></div>`).join('')
+      || '<p class="sub" style="padding:12px 14px">Žádné knihy. Přidej je ručně.</p>';
+    list.querySelectorAll('.shelf-row').forEach((row) => {
+      const r = rows[+row.dataset.r];
+      row.querySelector('input[type=checkbox]').onchange = (e) => { r.on = e.target.checked; row.classList.toggle('off', !r.on); sync(); };
+      row.querySelectorAll('input[data-f]').forEach((inp) => (inp.oninput = () => { r[inp.dataset.f] = inp.value; sync(); }));
+    });
+    sync();
+  };
+  draw();
+  el.querySelector('#sh-add').onclick = () => { rows.push({ title: '', author: '', on: true }); draw(); const ins = list.querySelectorAll('input[data-f=title]'); ins[ins.length - 1].focus(); };
+  el.querySelectorAll('#sh-st button').forEach((b) => (b.onclick = () => { status = b.dataset.k; el.querySelectorAll('#sh-st button').forEach((x) => x.classList.toggle('on', x === b)); }));
+  el.querySelector('#sh-save').onclick = async () => {
+    const pick = rows.filter((r) => r.on && r.title.trim());
+    const err = el.querySelector('#sh-err');
+    if (!pick.length) return (err.textContent = 'Vyber aspoň jednu knihu.');
+    err.textContent = '';
+    const btn = el.querySelector('#sh-save'); btn.disabled = true;
+    // Fill in ISBN, year and cover from free catalogues; keep title/author as printed on the spine.
+    let done = 0;
+    const out = new Array(pick.length);
+    const work = pick.map((r, i) => async () => {
+      const title = r.title.trim(), author = r.author.trim() || null;
+      let m = null;
+      try {
+        const res = await searchBooks([title, author].filter(Boolean).join(' '));
+        const nt = normT(title), na = normT(author || '');
+        m = res.find((b) => (normT(b.title).startsWith(nt.slice(0, 10)) || nt.startsWith(normT(b.title).slice(0, 10))) && (!na || normT(b.author).includes(na.slice(-6))));
+      } catch (e) {}
+      const fullAuthor = m?.author && author && m.author.length > author.length && normT(m.author).includes(normT(author)) ? m.author : author;
+      out[i] = { list: 'library', status, title, author: fullAuthor || m?.author || null, isbn: m?.isbn || null, year: m?.year || null, cover_url: safeUrl(m?.cover_url) || null };
+      btn.textContent = `Doplňuji údaje… ${++done}/${pick.length}`;
+    });
+    const queue = [...work];
+    await Promise.all(Array.from({ length: 4 }, async () => { while (queue.length) await queue.shift()(); }));
+    btn.textContent = 'Ukládám…';
+    const { error } = await sb.from('books').insert(out);
+    if (error) { btn.disabled = false; sync(); return (err.textContent = 'Nepodařilo se uložit. Zkus to znovu.'); }
+    await loadBooks(); close();
+    toast(`Přidáno ${pick.length} ${plural(pick.length, 'kniha', 'knihy', 'knih')}`);
+    S.view = 'library'; render();
+  };
+}
+
 async function uploadCover(blob) {
   const path = `${me()}/${crypto.randomUUID()}.jpg`;
   const { error } = await sb.storage.from('covers').upload(path, blob, { contentType: 'image/jpeg' });
@@ -521,21 +687,37 @@ async function uploadCover(blob) {
 function openSearch() {
   const { el, close } = sheet(`${head('Najít knihu')}
     <form id="sf" novalidate><div class="row"><input class="inp" id="sq" placeholder="Název nebo autor" autofocus><button class="mini primary" style="padding:10px 14px">Hledat</button></div><div class="err" id="sferr"></div></form>
+    <p class="hint">Funguje česky, anglicky i francouzsky. Nevadí překlep ani neúplný název.</p>
     <div id="res" style="margin-top:12px"></div>
-    <button class="btn ghost" id="manual" style="margin-top:12px">Zadat ručně</button>`);
-  el.querySelector('#manual').onclick = () => { close(); openEditor({ title: '' }, true); };
+    <div class="stack" style="margin-top:12px"><button class="btn" id="deep" hidden>${I.search}Není tam? Hledat důkladně na internetu</button>
+    <button class="btn ghost" id="manual">Zadat ručně</button></div>`);
+  const $q = el.querySelector('#sq'), res = el.querySelector('#res'), deepBtn = el.querySelector('#deep'), manual = el.querySelector('#manual');
+  let lastQ = '';
+  const spin = (t) => (res.innerHTML = `<div class="empty" style="padding:20px"><div class="spin" style="margin:0 auto 10px;color:var(--green)"></div>${esc(t || '')}</div>`);
+  const show = (items, note = '') => {
+    res.innerHTML = (note ? `<p class="hint" style="margin:0 0 8px">${esc(note)}</p>` : '') + resultRows(items);
+    res.querySelectorAll('[data-i]').forEach((r) => (r.onclick = () => { close(); openEditor(items[+r.dataset.i], true); }));
+  };
+  const setManual = (q) => (manual.textContent = q ? `Přidat ručně: „${q.length > 40 ? q.slice(0, 40) + '…' : q}“` : 'Zadat ručně');
+  manual.onclick = () => { close(); openEditor({ title: lastQ }, true); };
+  const runDeep = async () => {
+    deepBtn.hidden = true; spin(DEEP_MSG);
+    const d = await deepSearch({ q: lastQ });
+    if (d.error) { res.innerHTML = `<p class="sub">${esc(deepErrorText(d.error))}</p>`; return; }
+    if (!d.results.length) { res.innerHTML = `<p class="sub">Ani na internetu jsme ji nenašli. Přidej ji ručně, údaje stačí opsat z knihy.</p>`; return; }
+    show(d.results, 'Nalezeno na internetu. Zkontroluj, že sedí vydání.');
+  };
+  deepBtn.onclick = runDeep;
   el.querySelector('#sf').onsubmit = async (e) => {
     e.preventDefault();
-    const q = el.querySelector('#sq').value.trim();
+    const q = $q.value.trim();
     if (!q) return (el.querySelector('#sferr').textContent = 'Napiš název nebo autora.');
     el.querySelector('#sferr').textContent = '';
-    const res = el.querySelector('#res');
-    res.innerHTML = `<div class="empty" style="padding:20px"><div class="spin" style="margin:0 auto;color:var(--green)"></div></div>`;
+    lastQ = q; setManual(q); deepBtn.hidden = true; spin('Hledám v katalozích…');
     let items = [];
     try { items = await searchBooks(q); } catch (e) {}
-    if (!items.length) { res.innerHTML = `<p class="sub">Nic jsme nenašli. Zkus jiná slova, nebo knihu zadej ručně.</p>`; return; }
-    res.innerHTML = `<div class="list results">${items.map((b, i) => `<div class="li" data-i="${i}">${coverHtml(b)}<div class="grow"><b>${esc(b.title)}</b><span>${esc([b.author, b.year].filter(Boolean).join(' · '))}</span></div></div>`).join('')}</div>`;
-    res.querySelectorAll('[data-i]').forEach((r) => (r.onclick = () => { close(); openEditor(items[+r.dataset.i], true); }));
+    if (!items.length) return runDeep();
+    show(items); deepBtn.hidden = false;
   };
 }
 
