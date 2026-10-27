@@ -1,4 +1,6 @@
 const SUPABASE_URL = 'https://ukwoxnidopkcpcimhcrc.supabase.co';
+// Google Books key: free (1000 requests/day), restricted to forkitneratovice.github.io and Books API only.
+const GBOOKS_KEY = 'AIzaSyBMw_pc99KNGulZW7m3Yg-LLSSWTeMd5yE';
 const SUPABASE_KEY = 'sb_publishable_AimfClf0MBCRxMpgUeJD8w_RCiLqG1v';
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
@@ -108,7 +110,11 @@ const imgExists = (url) => new Promise((res) => {
   i.onload = () => { clearTimeout(t); res(i.naturalWidth > 10); }; i.onerror = () => { clearTimeout(t); res(false); }; i.src = url;
 });
 async function findCover(isbn, title, author) {
-  if (isbn) { const u = olCover(isbn); if (await imgExists(u)) return u; }
+  if (isbn) {
+    const hit = await lookupIsbnCatalogs(isbn);
+    if (hit?.cover_url && await imgExists(hit.cover_url)) return hit.cover_url;
+    const u = olCover(isbn); if (u !== hit?.cover_url && await imgExists(u)) return u;
+  }
   try {
     const hits = await searchBooks([title, author].filter(Boolean).join(' '));
     const nt = normT(title);
@@ -118,7 +124,26 @@ async function findCover(isbn, title, author) {
   return null;
 }
 // Fills only what is missing; never overwrites what the user typed. Returns 'ok' or an error code.
+// Free step: Google Books / Open Library fill year, ISBN, publisher and cover without any AI cost.
+async function catalogMatch(b) {
+  if (b.isbn) return lookupIsbnCatalogs(b.isbn);
+  const hits = await searchBooks([b.title, b.author].filter(Boolean).join(' '));
+  const nt = normT(b.title), na = normT((b.author || '').split(/[ ,]+/).pop());
+  return hits.find((h) => (normT(h.title).startsWith(nt.slice(0, 12)) || nt.startsWith(normT(h.title).slice(0, 12))) && (!na || normT(h.author).includes(na))) || null;
+}
 async function enrichBook(b) {
+  try {
+    const m = await catalogMatch(b);
+    if (m) {
+      const up0 = {};
+      if (!b.isbn && m.isbn) up0.isbn = m.isbn;
+      if (!b.year && m.year) up0.year = m.year;
+      if (!b.publisher && m.publisher) up0.publisher = m.publisher;
+      if (m.author && (!b.author || (m.author.length > b.author.length && normT(m.author).includes(normT(b.author))))) up0.author = m.author;
+      if (!safeUrl(b.cover_url) && m.cover_url && await imgExists(m.cover_url)) up0.cover_url = m.cover_url;
+      if (Object.keys(up0).length) { const { error } = await sb.from('books').update(up0).eq('id', b.id); if (!error) Object.assign(b, up0); }
+    }
+  } catch (e) {}
   const { data, error } = await sb.functions.invoke('enrich-book', { body: { title: b.title, author: b.author, isbn: b.isbn, year: b.year } });
   let code = null;
   if (error) { try { code = (await error.context.json()).error; } catch (e) {} code = code || 'failed'; }
@@ -172,7 +197,7 @@ async function enrichMany(books) {
 
 async function lookupIsbnCatalogs(isbn) {
   try {
-    const r = await fetch('https://www.googleapis.com/books/v1/volumes?q=isbn:' + isbn);
+    const r = await fetch(`https://www.googleapis.com/books/v1/volumes?key=${GBOOKS_KEY}&q=isbn:` + isbn);
     if (r.ok) { const v = (await r.json()).items?.[0]?.volumeInfo; if (v) return fromGoogle(v, isbn); }
   } catch (e) {}
   try {
@@ -202,10 +227,10 @@ function fromGoogle(v, isbn) {
   if (cover) cover = cover.replace('http://', 'https://').replace('&edge=curl', '');
   const is = isbn || i13 || null;
   if (!cover && is) cover = olCover(is);
-  return { title: v.title + (v.subtitle ? ': ' + v.subtitle : ''), author: v.authors?.join(', ') || null, isbn: is, year: parseInt(v.publishedDate) || null, cover_url: cover };
+  return { title: v.title + (v.subtitle ? ': ' + v.subtitle : ''), author: v.authors?.join(', ') || null, isbn: is, year: parseInt(v.publishedDate) || null, cover_url: cover, publisher: v.publisher || null };
 }
 async function searchGoogle(q) {
-  const r = await fetch('https://www.googleapis.com/books/v1/volumes?maxResults=10&q=' + encodeURIComponent(q));
+  const r = await fetch(`https://www.googleapis.com/books/v1/volumes?key=${GBOOKS_KEY}&maxResults=10&q=` + encodeURIComponent(q));
   if (!r.ok) return [];
   return ((await r.json()).items || []).map((it) => fromGoogle(it.volumeInfo));
 }
@@ -862,6 +887,25 @@ async function boot() {
     return;
   }
   render();
+  setTimeout(backfillCovers, 1500);
+}
+// Once a day, quietly try free catalogues for books that still have no cover.
+async function backfillCovers() {
+  const day = new Date().toISOString().slice(0, 10);
+  let tried = {};
+  try { tried = JSON.parse(localStorage.getItem('tsundoku_cover_tried') || '{}'); if (tried.day !== day) tried = { day, ids: [] }; } catch (e) { tried = { day, ids: [] }; }
+  const todo = S.books.filter((b) => !safeUrl(b.cover_url) && !tried.ids.includes(b.id)).slice(0, 60);
+  if (!todo.length) return;
+  let changed = 0;
+  for (const b of todo) {
+    tried.ids.push(b.id);
+    try {
+      const c = await findCover(b.isbn, b.title, b.author);
+      if (c) { const { error } = await sb.from('books').update({ cover_url: c }).eq('id', b.id); if (!error) { b.cover_url = c; changed++; } }
+    } catch (e) {}
+  }
+  try { localStorage.setItem('tsundoku_cover_tried', JSON.stringify(tried)); } catch (e) {}
+  if (changed && !$sheet.innerHTML) render();
 }
 {
   const p = new URLSearchParams(location.search).get('pritel');
