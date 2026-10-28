@@ -963,12 +963,13 @@ function viewFriend() {
   S.friendBooks.forEach((b) => (b._res = S.friendRes?.[b.id] || null));
   const all = S.friendBooks.filter((b) => b.list === S.friendTab);
   const chip = (k, l) => `<button class="chip ${S.friendTab === k ? 'on' : ''}" data-ft="${k}">${l}</button>`;
-  const hasFavs = favsAny(S.friendFavs, S.friendBooks);
   const nHome = S.friendBooks.filter((b) => b.list === 'library' && b.loan_type !== 'returned').length;
+  const prof = S.friendTab === 'profile';
   return `<button class="back" id="back">${I.left}Přátelé</button>
-    <div class="top"><div><h1>${esc(p.display_name)}</h1><p class="sub">@${esc(p.username)} · ${nHome} ${plural(nHome, 'kniha', 'knihy', 'knih')}</p></div>${avHtml(p, 'lg')}</div>
-    <div class="chips">${chip('library', 'Knihovna')}${chip('wishlist', 'Wishlist')}${hasFavs ? chip('favs', 'Oblíbené') : ''}</div>
-    ${S.friendTab === 'favs' ? favsHtml(S.friendFavs || {}, S.friendBooks, false) : all.length ? controlsHtml('friend', all, { chips: false, placeholder: 'Hledat' }) : `<div class="empty">${S.friendTab === 'wishlist' ? 'Wishlist je zatím prázdný.' : 'Knihovna je zatím prázdná.'}</div>`}`;
+    ${prof ? `<div class="prof-head">${avHtml(p, 'xl')}<h1>${esc(p.display_name)}</h1><p class="sub">@${esc(p.username)}</p>${statsHtml(S.friendBooks)}</div>`
+      : `<div class="top"><div><h1>${esc(p.display_name)}</h1><p class="sub">@${esc(p.username)} · ${nHome} ${plural(nHome, 'kniha', 'knihy', 'knih')}</p></div><button class="prof-open" id="fprof" aria-label="Profil">${avHtml(p, 'lg')}</button></div>`}
+    <div class="chips">${chip('profile', 'Profil')}${chip('library', 'Knihovna')}${chip('wishlist', 'Wishlist')}</div>
+    ${prof ? (favsHtml(S.friendFavs || {}, S.friendBooks, false) || `<p class="sub" style="text-align:center">Oblíbené knihy tu zatím nejsou.</p>`) : all.length ? controlsHtml('friend', all, { chips: false, placeholder: 'Hledat' }) : `<div class="empty">${S.friendTab === 'wishlist' ? 'Wishlist je zatím prázdný.' : 'Knihovna je zatím prázdná.'}</div>`}`;
 }
 const plural = (n, a, b, c) => (n === 1 ? a : n >= 2 && n <= 4 ? b : c);
 
@@ -989,6 +990,7 @@ function bindView() {
   const ab = document.getElementById('about'); if (ab) ab.onclick = openAbout;
   const ea = document.getElementById('enr-all'); if (ea) ea.onclick = () => { enrichMany(S.books.filter((b) => !b.enriched_at)); render(); };
   const back = document.getElementById('back'); if (back) back.onclick = () => goBack(() => { S.friend = null; if (S.view !== 'friends') S.view = 'library'; render(); window.scrollTo(0, 0); });
+  const fp = document.getElementById('fprof'); if (fp) fp.onclick = () => { S.friendTab = 'profile'; render(); window.scrollTo(0, 0); };
   $app.querySelectorAll('[data-favbook]').forEach((x) => (x.onclick = () => openBook(x.dataset.favbook, x.dataset.own === '1')));
   if (S.view === 'profile') bindProfile();
 
@@ -1649,7 +1651,6 @@ const FAV_DEFS = [
   ['quote', 'Oblíbený citát', 'quote'],
 ];
 const favArr = (v) => (Array.isArray(v) ? v : v ? [v] : []).filter((x) => x && x.title);
-const favsAny = (f, books) => !!f && (FAV_DEFS.some(([k, , t]) => (t === 'book' || t === 'audio' ? favArr(f[k]).length : f[k])) || !!f.about || (f.show_reading && (books || []).some((b) => b.list === 'library' && b.status === 'reading')));
 function favBookHtml(v, books, own) {
   const b = books.find((x) => x.id === v.id);
   const inner = `<div class="thumb">${coverHtml(b || v)}</div><div class="grow"><b>${esc(v.title)}</b><span>${esc(v.author || '')}</span></div>`;
@@ -1684,18 +1685,22 @@ function applyTheme(t) {
 function setTheme(t) { try { localStorage.setItem(THEME_KEY, t); } catch (e) {} applyTheme(t); }
 applyTheme(getTheme());
 try { matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => applyTheme(getTheme())); } catch (e) {}
-function viewProfile() {
-  const p = S.profile;
-  const lib = S.books.filter((b) => b.list === 'library');
+// Same numbers on my profile and on a friend's: books at home, read, read this year.
+function statsHtml(books) {
+  const lib = books.filter((b) => b.list === 'library');
   const home = lib.filter((b) => b.loan_type !== 'returned').length;
   const read = lib.filter((b) => b.status === 'read').length;
-  const y = new Date().getFullYear();
+  const y = new Date().getFullYear(), year = lib.filter((b) => b.status === 'read' && finishedYear(b) === y).length;
+  return `<div class="pstats"><div><b>${home}</b><span>${plural(home, 'kniha doma', 'knihy doma', 'knih doma')}</span></div><div><b>${read}</b><span>přečteno</span></div><div><b>${year}</b><span>letos</span></div></div>`;
+}
+function viewProfile() {
+  const p = S.profile;
   return `<button class="back" id="back">${I.left}Knihovna</button>
     <div class="prof-head">
       <button class="prof-av" id="pav" aria-label="Změnit profilovou fotku">${avHtml(p, 'xl')}<span class="cam">${I.camera}</span></button>
       <input type="file" id="pav-in" accept="image/*" hidden>
       <h1>${esc(p.display_name)}</h1><p class="sub">@${esc(p.username)}</p>
-      <div class="pstats"><div><b>${home}</b><span>${plural(home, 'kniha doma', 'knihy doma', 'knih doma')}</span></div><div><b>${read}</b><span>přečteno</span></div><div><b>${readIn(y).length}</b><span>letos</span></div></div>
+      ${statsHtml(S.books)}
     </div>
     ${favsHtml(S.favs || {}, S.books, true)}
     <button class="btn primary" id="pedit" style="margin-top:14px">${I.edit}Upravit profil</button>

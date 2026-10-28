@@ -378,3 +378,4 @@ button.mcol[disabled]{cursor:default}
 .banner.loanb{background:var(--amber-bg);border-color:var(--amber-bg)}
 .li.lr{align-items:flex-start}
 .li .thumb .cover{border-radius:3px}
+.prof-open{border-radius:50%;padding:0;flex-shrink:0}
