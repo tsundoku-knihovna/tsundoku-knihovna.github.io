@@ -136,8 +136,19 @@ async function loadFavs() {
   const { data } = await sb.from('profile_favs').select('favs').eq('user_id', S.session.user.id).maybeSingle();
   S.favs = data?.favs || {};
 }
+// Supabase returns at most 1000 rows per request, so big libraries are loaded in pages.
+async function fetchAllBooks(ownerId) {
+  const out = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await sb.from('books').select('*').eq('owner_id', ownerId)
+      .order('created_at', { ascending: false }).order('id').range(from, from + 999);
+    if (error) return { data: out.length ? out : null, error };
+    out.push(...(data || []));
+    if (!data || data.length < 1000) return { data: out, error: null };
+  }
+}
 async function loadBooks() {
-  const { data, error } = await sb.from('books').select('*').eq('owner_id', S.session.user.id).order('created_at', { ascending: false });
+  const { data, error } = await fetchAllBooks(S.session.user.id);
   if (!error) S.books = data;
 }
 async function loadFriends() {
@@ -1174,7 +1185,7 @@ async function invite() {
   else { try { await navigator.clipboard.writeText(text + '\n' + url); toast('Odkaz zkopírován'); } catch (e) { toast(url); } }
 }
 async function openFriend(id, tab) {
-  const { data } = await sb.from('books').select('*').eq('owner_id', id).order('created_at', { ascending: false });
+  const { data } = await fetchAllBooks(id);
   const { data: fv } = await sb.from('profile_favs').select('favs').eq('user_id', id).maybeSingle();
   S.friendFavs = fv?.favs || {};
   S.view = 'friends'; S.friend = S.profilesById[id]; S.friendBooks = data || []; await loadFriendReservations(); S.friendTab = tab || 'library'; UI.friend = { q: '', filter: 'all', genres: [], gAll: false, format: 'all', lang: '' }; render(); window.scrollTo(0, 0);
