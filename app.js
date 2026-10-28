@@ -681,6 +681,7 @@ function openFilters(key) {
   const { el, close } = sheet(`${head('Filtry a řazení')}<div id="flt"></div>
     <button class="btn primary" id="fdone" style="margin-top:16px">Hotovo</button>`, null, () => openFilters(key));
   const box = el.querySelector('#flt');
+  let gOpen = false; // genres stay folded until tapped
   const draw = () => {
     const nF = { book: 0, ebook: 0, audio: 0 };
     booksAll.forEach((b) => (nF[b.format || 'book'] = (nF[b.format || 'book'] || 0) + 1));
@@ -696,9 +697,9 @@ function openFilters(key) {
       ${showFmt ? `<label class="f">Formát</label><div class="chips">${chip('data-xf', 'all', 'Vše', u.format === 'all', booksAll.length)}${FORMATS.map(([k, pl]) => chip('data-xf', k, pl, u.format === k, nF[k])).join('')}</div>` : ''}
       ${key === 'library' ? `<label class="f">Stav</label><div class="chips">${filtersFor(u.format === 'audio').map(([k, l]) => chip('data-xs', k, l, u.filter === k)).join('')}</div>` : ''}
       ${langs.length > 1 ? `<label class="f">Jazyk</label><div class="chips">${chip('data-xl', '', 'Všechny', !u.lang)}${langs.map(([k, l]) => chip('data-xl', k, l, u.lang === k, lc[k])).join('')}</div>` : ''}
-      ${genres.length ? `<label class="f">Žánry <span class="hint" style="margin:0">· můžeš vybrat víc</span></label>
-        <div class="chips">${chip('data-xg', '', 'Všechny', !u.genres.length)}${genres.map((g) => chip('data-xg', esc(g), esc(g), u.genres.includes(g), counts[g])).join('')}</div>
-        ${u.genres.length > 1 ? `<div class="seg" style="margin-top:2px">${[[false, 'Aspoň jeden z nich'], [true, 'Všechny najednou']].map(([v, l]) => `<button type="button" data-xga="${v ? 1 : 0}" class="${!!u.gAll === v ? 'on' : ''}">${l}</button>`).join('')}</div>` : ''}` : ''}
+      ${genres.length ? `<button type="button" class="fold ${gOpen ? 'open' : ''}" id="xgt"><span>Žánry</span><span class="fold-v">${u.genres.length ? esc(u.genres.join(', ')) : 'všechny'}</span></button>
+        ${gOpen ? `<p class="hint" style="margin:6px 0 8px">Můžeš vybrat víc žánrů.</p><div class="chips">${chip('data-xg', '', 'Všechny', !u.genres.length)}${genres.map((g) => chip('data-xg', esc(g), esc(g), u.genres.includes(g), counts[g])).join('')}</div>
+        ${u.genres.length > 1 ? `<div class="seg" style="margin-top:2px">${[[false, 'Aspoň jeden z nich'], [true, 'Všechny najednou']].map(([v, l]) => `<button type="button" data-xga="${v ? 1 : 0}" class="${!!u.gAll === v ? 'on' : ''}">${l}</button>`).join('')}</div>` : ''}` : ''}` : ''}
       <label class="f">Řazení</label><div class="chips">${SORTS.map(([k, l]) => chip('data-xo', k, l, prefs.sort === k)).join('')}</div>
       <label class="f">Zobrazení</label><div class="seg">${[['grid', 'Obálky', I.grid], ['list', 'Seznam', I.list]].map(([k, l, i]) => `<button type="button" data-xv="${k}" class="${prefs.layout === k ? 'on' : ''}">${i} ${l}</button>`).join('')}</div>
       ${key === 'library' && S.books.some((b) => b.series_name) ? `<button class="btn" id="xser" style="margin-top:16px">${I.books}Série</button>` : ''}
@@ -712,6 +713,7 @@ function openFilters(key) {
       u.genres = !g ? [] : u.genres.includes(g) ? u.genres.filter((x) => x !== g) : [...u.genres, g];
       apply();
     }));
+    const xgt = box.querySelector('#xgt'); if (xgt) xgt.onclick = () => { gOpen = !gOpen; draw(); };
     box.querySelectorAll('[data-xga]').forEach((b) => (b.onclick = () => { u.gAll = b.dataset.xga === '1'; apply(); }));
     box.querySelectorAll('[data-xo]').forEach((b) => (b.onclick = () => { prefs.sort = b.dataset.xo; savePrefs(); apply(); }));
     box.querySelectorAll('[data-xv]').forEach((b) => (b.onclick = () => { prefs.layout = b.dataset.xv; savePrefs(); apply(); }));
@@ -2205,7 +2207,7 @@ function openPick() {
               <div class="row" style="gap:6px;margin-top:6px">${r.added ? '<span class="pill sm">Ve wishlistu ✓</span>' : `<button class="mini primary" data-wish="${i}">${I.heart}Do wishlistu</button>`}
               <a class="mini" href="${esc(goodreadsUrl(r))}" target="_blank" rel="noopener">Goodreads</a><a class="mini" href="${esc(dbkUrl(r))}" target="_blank" rel="noopener">Databáze knih</a></div></div></div>`).join('')}</div>
               <p class="hint">Doporučuje AI podle toho, co o knihách ví. Než si knihu koupíš, mrkni na odkaz.</p>` : '<p class="sub">Nic se nenašlo. Zkus jinou knihu.</p>')
-        : `<button class="btn" id="pfind">${I.search}Najít podobné knihy (AI, pár haléřů)</button>`}</div>`;
+        : `<button class="btn" id="pfind">${I.search}Najít podobné knihy</button>`}</div>`;
     bindMode();
     box.querySelector('#pa').onchange = (e) => { PICK.anchorId = e.target.value; PICK.simIdx = 0; draw(); };
     box.querySelector('#pp').onchange = (e) => { PICK.paused = e.target.checked; PICK.simIdx = 0; draw(); };

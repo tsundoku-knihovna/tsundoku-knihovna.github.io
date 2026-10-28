@@ -387,3 +387,9 @@ button.mcol[disabled]{cursor:default}
 .li.sim .mini{display:inline-flex;align-items:center;gap:5px;text-decoration:none;color:inherit}
 .li.sim .mini.primary{color:var(--on-accent)}
 .li.sim .mini svg{width:14px;height:14px}
+/* v34: folded genre list in filters */
+.fold{display:flex;justify-content:space-between;align-items:center;gap:10px;width:100%;margin-top:14px;padding:11px 14px;border:1px solid var(--line);border-radius:10px;background:var(--paper-2);text-align:left}
+.fold>span:first-child{font-weight:500}
+.fold .fold-v{font-size:13px;color:var(--ink-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.fold .fold-v::after{content:' ›';display:inline-block;margin-left:4px;transition:transform .15s}
+.fold.open .fold-v::after{transform:rotate(90deg)}
