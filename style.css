@@ -410,3 +410,8 @@ button.mcol[disabled]{cursor:default}
 .brow.picked .selbox{background:var(--green);border-color:var(--green);color:var(--on-accent)}
 .banner .which{display:block;font-size:13px;color:var(--ink);margin:1px 0 2px}
 .banner .which .link-sub{font-size:13px}
+/* v38: friends' reads */
+.book .fin{font-size:11px;color:var(--ink-2);margin-top:1px}
+.fr-have .li{width:100%;text-align:left;padding:9px 12px}
+.fr-have .stars{font-size:13px;flex-shrink:0}
+.chip .n{font-size:11px;opacity:.65}

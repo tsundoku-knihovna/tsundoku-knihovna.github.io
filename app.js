@@ -717,7 +717,7 @@ function applyUI(books, key) {
     else {
       if (u.filter !== 'all' && b.status !== u.filter) return false;
       // Books she only borrowed and gave back are not on her shelf: shown only when searching or with "Nemám doma".
-      if (!u.q && b.loan_type === 'returned') return false;
+      if (!u.q && b.loan_type === 'returned' && !(key === 'friend' && S.friendTab === 'read')) return false;
     }
     if (u.genres.length) {
       const t = b.tags || [];
@@ -727,10 +727,11 @@ function applyUI(books, key) {
     return matchQ(b, u.q);
   }), prefs.sort);
   // Wishlist: "Nejvíc chci" first (sort is stable, so the chosen order stays within both groups).
+  if (key === 'friend' && S.friendTab === 'read' && prefs.sort === 'added') res.sort((a, b) => (b.finished_precision === 'unknown' ? '' : b.finished_at || '').localeCompare(a.finished_precision === 'unknown' ? '' : a.finished_at || ''));
   if (key === 'wishlist' || (key === 'friend' && S.friendTab === 'wishlist')) res.sort((a, b) => (b.wish_top ? 1 : 0) - (a.wish_top ? 1 : 0));
   return res;
 }
-const loanText = (b) => (b.loan_type === 'lent' ? `Půjčeno${b.loan_person ? ': ' + b.loan_person : ''}` : b.loan_type === 'borrowed' ? `Vypůjčeno${b.loan_person ? ' od: ' + b.loan_person : ''}` : b.loan_type === 'returned' ? `Nemám doma${b.loan_person ? ' · půjčila ' + b.loan_person : ''}` : '');
+const loanText = (b) => (b.loan_type === 'lent' ? `Půjčeno${b.loan_person ? ': ' + b.loan_person : ''}` : b.loan_type === 'borrowed' ? `Vypůjčeno${b.loan_person ? ' od: ' + b.loan_person : ''}` : b.loan_type === 'returned' ? (b.owner_id && S.session && b.owner_id !== me() ? 'Četla půjčenou' : `Nemám doma${b.loan_person ? ' · půjčila ' + b.loan_person : ''}`) : '');
 function booksHtml(list, own = true) {
   const sel = own && S.sel;
   const selCls = (b) => (sel ? ` selectable${S.sel.ids.has(b.id) ? ' picked' : ''}` : '');
@@ -741,7 +742,7 @@ function booksHtml(list, own = true) {
     const acts = (b) => ['reading', 'read'].map((k) => `<button type="button" class="sw-btn st-${k}${b.status === k ? ' cur' : ''}" data-setst="${k}" data-bid="${b.id}">${b.status === k ? '✓ ' : ''}${statusMap(isAudio(b))[k]}</button>`).join('');
     return `<div class="list blist">${list.map((b) => `${swipeable(b) ? `<div class="swipe" data-sid="${b.id}"><div class="sw-actions">${acts(b)}</div>` : ''}<button class="book brow${selCls(b)}" data-id="${b.id}" data-own="${own ? 1 : 0}">
       ${tick}<div class="thumb">${coverHtml(b)}</div>
-      <div class="grow"><b>${esc(b.title)}</b><span>${esc([b.author, b.year].filter(Boolean).join(' · '))}</span>
+      <div class="grow"><b>${esc(b.title)}</b><span>${esc([b.author, !own && S.friendTab === 'read' && finishedText(b) ? finishedText(b) : b.year].filter(Boolean).join(' · '))}</span>
         <div class="meta">${b.rating ? `<span class="stars">${starsTxt(b.rating)}</span>` : ''}${b.language && b.language !== 'cs' ? `<span class="lang">${b.language.toUpperCase()}</span>` : ''}
           ${b.list === 'library' ? `<span class="pill sm st-${b.status}">${statusLabel(b)}</span>` : ''}
           ${b.list === 'wishlist' && b.wish_top ? '<span class="pill sm gold">★ Nejvíc chci</span>' : ''}${b.loan_type ? `<span class="pill sm wine">${esc(loanText(b))}</span>` : ''}${b._res ? `<span class="pill sm wine">${b._res === 'me' ? 'Zamluvila jsi' : 'Zamluveno'}</span>` : ''}
@@ -751,6 +752,7 @@ function booksHtml(list, own = true) {
   return `<div class="grid">${list.map((b) => `<button class="book${selCls(b)}" data-id="${b.id}" data-own="${own ? 1 : 0}">
     ${tick}${coverHtml(b)}<div class="t">${b.language && b.language !== 'cs' ? `<span class="lang">${b.language.toUpperCase()}</span> ` : ''}${esc(b.title)}</div><div class="a">${esc(b.author || '')}</div>
     ${b.rating ? `<div class="stars">${starsTxt(b.rating)}</div>` : ''}
+    ${!own && S.friendTab === 'read' && finishedText(b) ? `<div class="fin">${esc(finishedText(b))}</div>` : ''}
     ${b.list === 'wishlist' && b.wish_top ? '<div class="wtop">★ Nejvíc chci</div>' : ''}${b.loan_type ? `<div class="loan">${esc(loanText(b))}</div>` : ''}${b._res ? `<div class="loan">${b._res === 'me' ? 'Zamluvila jsi' : 'Zamluveno'}</div>` : ''}</button>`).join('')}</div>`;
 }
 // Search box with clear button + status chips + sort / genre / layout toolbar.
@@ -793,7 +795,7 @@ function openFilters(key) {
     const chip = (attr, val, label, on, n) => `<button class="chip ${on ? 'on' : ''}" ${attr}="${val}">${label}${n != null ? ` <span class="n">${n}</span>` : ''}</button>`;
     box.innerHTML = `
       ${showFmt ? `<label class="f">Formát</label><div class="chips">${chip('data-xf', 'all', 'Vše', u.format === 'all', booksAll.length)}${FORMATS.map(([k, pl]) => chip('data-xf', k, pl, u.format === k, nF[k])).join('')}</div>` : ''}
-      ${key === 'library' ? `<label class="f">Stav</label><div class="chips">${filtersFor(u.format === 'audio').map(([k, l]) => chip('data-xs', k, l, u.filter === k)).join('')}</div>` : ''}
+      ${key === 'library' || (key === 'friend' && S.friendTab === 'library') ? `<label class="f">Stav</label><div class="chips">${filtersFor(u.format === 'audio').filter(([k]) => key === 'library' || k !== 'notowned').map(([k, l]) => chip('data-xs', k, l, u.filter === k)).join('')}</div>` : ''}
       ${langs.length > 1 ? `<label class="f">Jazyk</label><div class="chips">${chip('data-xl', '', 'Všechny', !u.lang)}${langs.map(([k, l]) => chip('data-xl', k, l, u.lang === k, lc[k])).join('')}</div>` : ''}
       ${genres.length ? `<button type="button" class="fold ${gOpen ? 'open' : ''}" id="xgt"><span>Žánry</span><span class="fold-v">${u.genres.length ? esc(u.genres.join(', ')) : 'všechny'}</span></button>
         ${gOpen ? `<p class="hint" style="margin:6px 0 8px">Můžeš vybrat víc žánrů.</p><div class="chips">${chip('data-xg', '', 'Všechny', !u.genres.length)}${genres.map((g) => chip('data-xg', esc(g), esc(g), u.genres.includes(g), counts[g])).join('')}</div>
@@ -823,15 +825,17 @@ function openFilters(key) {
   el.querySelector('#fdone').onclick = close;
   draw();
 }
+// A friend's tab: library, wishlist, or everything she has read (also borrowed books she gave back).
+const friendTabBooks = () => (S.friendTab === 'read' ? S.friendBooks.filter((b) => b.list === 'library' && b.status === 'read') : S.friendBooks.filter((b) => b.list === S.friendTab));
 const listSource = (key) => key === 'library' ? S.books.filter((b) => b.list === 'library')
   : key === 'wishlist' ? S.books.filter((b) => b.list === 'wishlist')
-  : S.friendBooks.filter((b) => b.list === S.friendTab);
+  : friendTabBooks();
 function updateResults(key) {
   const box = document.getElementById('results-' + key);
   if (!box) return;
   const u = UI[key];
   const all = listSource(key).filter((b) => u.q || !u.format || u.format === 'all' || (b.format || 'book') === u.format)
-    .filter((b) => u.q || u.filter === 'notowned' || b.loan_type !== 'returned');
+    .filter((b) => u.q || u.filter === 'notowned' || b.loan_type !== 'returned' || (key === 'friend' && S.friendTab === 'read'));
   const list = applyUI(all, key);
   const filtered = list.length !== all.length;
   const across = u.q && u.format !== 'all' && listSource(key).some((b) => (b.format || 'book') !== u.format);
@@ -1091,14 +1095,15 @@ function viewFriends() {
 function viewFriend() {
   const p = S.friend;
   S.friendBooks.forEach((b) => (b._res = S.friendRes?.[b.id] || null));
-  const all = S.friendBooks.filter((b) => b.list === S.friendTab);
+  const all = friendTabBooks();
+  const nRead = S.friendBooks.filter((b) => b.list === 'library' && b.status === 'read').length;
   const chip = (k, l) => `<button class="chip ${S.friendTab === k ? 'on' : ''}" data-ft="${k}">${l}</button>`;
   const nHome = S.friendBooks.filter((b) => b.list === 'library' && b.loan_type !== 'returned').length;
   const prof = S.friendTab === 'profile';
   return `<button class="back" id="back">${I.left}Přátelé</button>
     ${prof ? `<div class="prof-head">${avHtml(p, 'xl')}<h1>${esc(p.display_name)}</h1><p class="sub">@${esc(p.username)}</p>${statsHtml(S.friendBooks)}</div>`
       : `<div class="top"><div><h1>${esc(p.display_name)}</h1><p class="sub">@${esc(p.username)} · ${nHome} ${plural(nHome, 'kniha', 'knihy', 'knih')}</p></div><button class="prof-open" id="fprof" aria-label="Profil">${avHtml(p, 'lg')}</button></div>`}
-    <div class="chips">${chip('profile', 'Profil')}${chip('library', 'Knihovna')}${chip('wishlist', 'Wishlist')}</div>
+    <div class="chips">${chip('profile', 'Profil')}${chip('library', 'Knihovna')}${nRead ? chip('read', `Přečtené <span class="n">${nRead}</span>`) : ''}${chip('wishlist', 'Wishlist')}</div>
     ${prof ? (favsHtml(S.friendFavs || {}, S.friendBooks, false) || `<p class="sub" style="text-align:center">Oblíbené knihy tu zatím nejsou.</p>`) : all.length ? controlsHtml('friend', all, { chips: false, placeholder: 'Hledat' }) : `<div class="empty">${S.friendTab === 'wishlist' ? 'Wishlist je zatím prázdný.' : 'Knihovna je zatím prázdná.'}</div>`}`;
 }
 const plural = (n, a, b, c) => (n === 1 ? a : n >= 2 && n <= 4 ? b : c);
@@ -1232,9 +1237,13 @@ async function openBook(id, own) {
   if (!b) return;
   let friendsHave = [];
   if (own && acceptedFriends().length) {
-    let q = sb.from('books').select('owner_id').neq('owner_id', me()).eq('list', 'library').or('loan_type.is.null,loan_type.neq.returned');
+    let q = sb.from('books').select('owner_id,status,rating,format,loan_type').neq('owner_id', me()).eq('list', 'library');
     q = b.isbn ? q.eq('isbn', b.isbn) : q.ilike('title', b.title);
-    const { data } = await q; friendsHave = [...new Set((data || []).map((x) => x.owner_id))].map((i) => S.profilesById[i]).filter(Boolean);
+    const { data } = await q;
+    // One row per friend; prefer the copy she has read.
+    const byOwner = {};
+    (data || []).forEach((x) => { if (!byOwner[x.owner_id] || (x.status === 'read' && byOwner[x.owner_id].status !== 'read')) byOwner[x.owner_id] = x; });
+    friendsHave = Object.values(byOwner).map((x) => ({ p: S.profilesById[x.owner_id], x })).filter((f) => f.p);
   }
   const iHave = !own && S.books.some((x) => (b.isbn && x.isbn === b.isbn) || x.title.toLowerCase() === b.title.toLowerCase());
   const pending = own && enrichState.ids.has(b.id);
@@ -1262,7 +1271,7 @@ async function openBook(id, own) {
         ${b.loan_type === 'borrowed' ? `<button class="btn" id="ret">Vrátila jsem ji (nemám ji doma)</button>` : ''}`
       : `${b.loan_type === 'returned' ? '' : friendBookActions(b)}${iHave ? `<p class="hint" style="text-align:center">Tuhle knihu už máš.</p>` : `<button class="btn wine" id="want">${I.heart}Chci ji taky (do wishlistu)</button>`}`}
     </div>
-    ${friendsHave.length ? `<label class="f" style="margin-top:16px">Mají ji i přátelé</label><div class="friends-have">${friendsHave.map((p) => avHtml(p, 'sm')).join('')}</div>` : ''}`, null, () => openBook(id, own));
+    ${friendsHave.length ? `<label class="f" style="margin-top:16px">Přátelé a tahle kniha</label><div class="list fr-have">${friendsHave.map(({ p, x }) => `<button class="li" data-fopen="${p.id}">${avHtml(p, 'sm')}<div class="grow"><b>${esc(p.display_name)}</b><span>${esc(statusMap(x.format === 'audio')[x.status] || '')}${x.loan_type === 'returned' ? ' · půjčená' : ''}</span></div>${x.rating ? `<span class="stars">${starsTxt(x.rating)}</span>` : ''}</button>`).join('')}</div>` : ''}`, null, () => openBook(id, own));
   el.querySelectorAll('[data-tag]').forEach((t) => (t.onclick = () => {
     close();
     const key = own ? (b.list === 'wishlist' ? 'wishlist' : 'library') : 'friend';
@@ -1277,6 +1286,7 @@ async function openBook(id, own) {
     Object.assign(b, up);
     if (own) await sb.from('books').update(up).eq('id', b.id);
   }).catch(() => {});
+  el.querySelectorAll('[data-fopen]').forEach((x) => (x.onclick = () => { close(); openFriend(x.dataset.fopen); }));
   const serl = el.querySelector('#serl'); if (serl) serl.onclick = () => { if (own) { close(); openSeries(b.series_name); } };
   if (!own) bindFriendBookActions(el, b, close);
   if (own) {
