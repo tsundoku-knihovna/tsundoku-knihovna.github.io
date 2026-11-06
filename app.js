@@ -3,6 +3,17 @@ const SUPABASE_URL = 'https://ukwoxnidopkcpcimhcrc.supabase.co';
 const GBOOKS_KEY = 'AIzaSyBMw_pc99KNGulZW7m3Yg-LLSSWTeMd5yE';
 const SUPABASE_KEY = 'sb_publishable_AimfClf0MBCRxMpgUeJD8w_RCiLqG1v';
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+// Every author saved to the books table goes through formatAuthors() ("Příjmení, Jméno; …").
+{
+  const fixRow = (r) => (r && typeof r === 'object' && typeof r.author === 'string' ? { ...r, author: formatAuthors(r.author) } : r);
+  const fromOrig = sb.from.bind(sb);
+  sb.from = (table) => {
+    const q = fromOrig(table);
+    if (table !== 'books') return q;
+    ['insert', 'update', 'upsert'].forEach((m) => { const f = q[m].bind(q); q[m] = (v, ...rest) => f(Array.isArray(v) ? v.map(fixRow) : fixRow(v), ...rest); });
+    return q;
+  };
+}
 
 const $app = document.getElementById('app');
 const $sheet = document.getElementById('sheet-root');
@@ -85,7 +96,7 @@ function coverHtml(b) {
 
 function dbkUrl(b) {
   if (/^https:\/\/(www\.)?databazeknih\.cz\//.test(b.dbk_url || '')) return b.dbk_url;
-  return 'https://www.databazeknih.cz/search?q=' + encodeURIComponent([b.title, b.author].filter(Boolean).join(' '));
+  return 'https://www.databazeknih.cz/search?q=' + encodeURIComponent([b.title, naturalAuthors(b.author)].filter(Boolean).join(' '));
 }
 // Goodreads. Best: a direct book page (gr_url, found via Open Library's Goodreads IDs). Fallback: a search
 // for the ORIGINAL title + author (Czech ISBNs and titles are mostly unknown to Goodreads).
@@ -131,6 +142,18 @@ function toast(msg) {
 async function loadProfile() {
   const { data } = await sb.from('profiles').select('*').eq('id', S.session.user.id).maybeSingle();
   S.profile = data;
+}
+// Books saved before the "Příjmení, Jméno" format: convert them once (each user only her own books).
+async function normalizeAuthors() {
+  const todo = S.books.filter((b) => b.author && formatAuthors(b.author) !== b.author);
+  for (let i = 0; i < todo.length; i += 10) {
+    await Promise.all(todo.slice(i, i + 10).map(async (b) => {
+      const author = formatAuthors(b.author);
+      const { error } = await sb.from('books').update({ author }).eq('id', b.id);
+      if (!error) b.author = author;
+    }));
+  }
+  if (todo.length) render();
 }
 async function loadFavs() {
   const { data } = await sb.from('profile_favs').select('favs').eq('user_id', S.session.user.id).maybeSingle();
@@ -208,7 +231,7 @@ async function findCover(isbn, title, author) {
     const u = olCover(isbn); if (u !== hit?.cover_url && await imgExists(u)) return u;
   }
   try {
-    const hits = await searchBooks([title, author].filter(Boolean).join(' '));
+    const hits = await searchBooks([title, naturalAuthors(author)].filter(Boolean).join(' '));
     const nt = normT(title);
     const m = hits.find((h) => h.cover_url && (isbn ? h.isbn === isbn : normT(h.title).startsWith(nt.slice(0, 10))));
     if (m && await imgExists(m.cover_url)) return m.cover_url;
@@ -236,6 +259,86 @@ async function findOriginalCover(originalTitle, author) {
 // Fills only what is missing; never overwrites what the user typed. Returns 'ok' or an error code.
 // Catalogues often list translators/narrators as extra authors and AI may add notes in brackets.
 // Take only the first clean name, and only use it to complete a missing or shortened name (Flynn → Gillian Flynn).
+/* ---------- Author names: stored as "Příjmení, Jméno"; several authors joined by "; " ---------- */
+const NAME_PARTICLES = /^(da|de|di|del|della|der|den|des|du|van|von|zu|la|le|ten|ter|bin|ibn|al|el)$/i;
+const NAME_SUFFIX = /^(jr|sr|ml|st)\.?$/i;
+const ROMAN = /^[IVX]+\.?$/;
+const NOT_A_PERSON = /\b(studio|collection|fathers|press|publishing|productions|nakladatelství|vydavatelství|editorial|group|team|company|redakce|museum|muzeum|institut|institute|society|university|univerzita|editions?|verlag|magazine|staff|ltd|s\.r\.o|bratři|bratří|sestry)\b|\s(z|ze)\s/i;
+const ETAL = /^(a\s+)?(kol\.?|kolektiv|et\s+al\.?|a\s+další)$/i;
+// "ARNOŠT LUSTIG" → "Arnošt Lustig", "josef čapek" → "Josef Čapek"; initials (J.R.R.), McDonald, IV. stay.
+const KEEP_LOWER = /^(a|and|und|et|alias|by|of|i|y|z|ze|st\.?|jr\.?|ml\.?|sr\.?|kol\.?|kolektiv|al\.?)$/;
+function fixCase(s) {
+  if (!/\s/.test(s.trim())) return s;
+  return s.split(' ').map((w) => {
+    const letters = w.replace(/[^\p{L}]/gu, '');
+    if (!letters || NAME_PARTICLES.test(w) || KEEP_LOWER.test(w) || ROMAN.test(w)) return w;
+    if (letters.length >= 2 && letters === letters.toUpperCase()) return w.toLowerCase().replace(/(^|[-'’"(.])(\p{L})/gu, (m, a, c) => a + c.toUpperCase());
+    if (letters === letters.toLowerCase()) return w.replace(/\p{L}/u, (c) => c.toUpperCase());
+    return w;
+  }).join(' ');
+}
+// Remove roles, titles and notes that are not part of the name.
+function stripNoise(s) {
+  return s.replace(/\((?:ed|eds|editor|editors|ilustr[^)]*|překl[^)]*|pen name[^)]*)\.?\)/gi, ' ')
+    .replace(/,?\s*\b(inspired by|illustrated by|translated by|alias)\b.*$/i, '')
+    .replace(/(^|[\s,])(ph\.?\s?d\.?|m\.?d\.?|mudr\.|phdr\.|ing\.|mgr\.|doc\.|prof\.|dr\.)(?=\s|,|$)/gi, ' ')
+    .replace(/^sir\s+/i, '')
+    .replace(/…|\.\.\.$/g, '').replace(/\s+/g, ' ').trim().replace(/^[,;&\s-]+|[,;&\s-]+$/g, '');
+}
+// One person written naturally ("Jan Karel Novák") → "Novák, Jan Karel".
+function invertPerson(p) {
+  p = p.trim();
+  if (!p || p.includes(',') || ETAL.test(p) || NOT_A_PERSON.test(p)) return p;
+  const w = p.split(/\s+/);
+  if (w.length < 2 || ROMAN.test(w[w.length - 1])) return p;
+  // Chinese/Korean names already surname-first: "Ču Wej-chua", "Hwang Bo-reum".
+  if (w.length === 2 && /^\p{Lu}\p{Ll}*-\p{Ll}/u.test(w[1])) return `${w[0]}, ${w[1]}`;
+  let suffix = '';
+  if (w.length > 2 && NAME_SUFFIX.test(w[w.length - 1])) suffix = ' ' + w.pop();
+  let i = w.length - 1;
+  while (i > 1 && NAME_PARTICLES.test(w[i - 1])) i--;
+  return `${w.slice(i).join(' ')}, ${w.slice(0, i).join(' ')}${suffix}`;
+}
+// Any raw author string (catalogue, AI, old data) → canonical "Příjmení, Jméno; Příjmení2, Jméno2".
+function formatAuthors(raw) {
+  if (raw == null) return raw;
+  const orig = String(raw).replace(/\s+/g, ' ').trim();
+  if (!orig || /^(no author|unknown|neznámý)$/i.test(orig)) return null;
+  if (NOT_A_PERSON.test(orig)) return orig;
+  let s = stripNoise(fixCase(orig));
+  if (!s) return null;
+  if (s.includes(';')) return s.split(/\s*;\s*/).filter(Boolean).map((p) => (p.includes(',') ? p.replace(/\s*,\s*/, ', ') : invertPerson(p))).join('; ');
+  let etal = false;
+  s = s.replace(/\s*(?:,|&)?\s*(?:a\s+)?(?:kol\.|kolektiv|et al\.?)\s*$/i, () => { etal = true; return ''; });
+  const parts = s.split(/\s*(?:,|&|\/|\s[-–]\s)\s*|\s+(?:and|And|a|und|et)\s+/).map((p) => p.trim().replace(/^(?:a|and|&)\s+/, '')).filter(Boolean);
+  // "Backman, Fredrik" (surname, given) – one inverted person, not two people.
+  if (parts.length === 2 && (s.match(/,/g) || []).length === 1 && !/[&/]|\s[-–]\s|\s(?:and|a|und|et)\s/.test(s)
+      && parts[0].split(/\s+/).filter((x) => !NAME_PARTICLES.test(x)).length === 1 && parts[1].split(/\s+/).length <= 3) {
+    return `${parts[0]}, ${parts[1]}${etal ? '; a kol.' : ''}`;
+  }
+  // "Václav a Dagmar Havlovi", "…, Kunster, Erfinder": a lone word next to full names – too unsure, keep as written.
+  if (parts.length > 1 && parts.some((p) => !p.includes(' ')) && parts.some((p) => p.includes(' '))) return fixCase(orig);
+  const out = parts.map(invertPerson);
+  if (etal) out.push('a kol.');
+  return out.join('; ');
+}
+// For catalogue searches, Goodreads and AI: "Novák, Jan; Dvořák, Petr" → "Jan Novák, Petr Dvořák".
+function naturalAuthors(a) {
+  if (!a) return '';
+  if (a.includes('(') || (!a.includes(';') && (a.match(/,/g) || []).length > 1)) return a;
+  return a.split(/\s*;\s*/).filter((p) => p && !ETAL.test(p)).map((p) => {
+    const m = p.match(/^([^,]+),\s*([^,]+)$/);
+    return m ? `${m[2]} ${m[1]}` : p;
+  }).join(', ');
+}
+// What the person typed in the editor: keep "Příjmení, Jméno"; turn "Jméno Příjmení" around.
+function tidyTypedAuthor(s) {
+  s = (s || '').replace(/\s+/g, ' ').trim();
+  if (!s) return null;
+  if (!s.includes(';') && !s.includes(',')) return formatAuthors(s);
+  return fixCase(s).split(/\s*;\s*/).filter(Boolean).map((p) => (p.includes(',') || ETAL.test(p) ? p.replace(/\s*,\s*/, ', ') : invertPerson(p))).join('; ');
+}
+const firstAuthor = (a) => ((a || '').split(/\s*;\s*/)[0] || '').trim() || null;
 function cleanAuthor(a) {
   if (!a) return null;
   const first = a.replace(/\([^)]*\)?/g, ' ').split(/\s*[,;/]\s*/)[0].replace(/\s+/g, ' ').trim();
@@ -244,15 +347,16 @@ function cleanAuthor(a) {
 function betterAuthor(current, candidate) {
   const c = cleanAuthor(candidate);
   if (!c) return null;
-  if (!current) return c;
-  if (c.length > current.length && normT(c).includes(normT(current)) && !/[(;]/.test(current)) return c;
+  if (!current) return formatAuthors(c);
+  const cur = naturalAuthors(current);
+  if (c.length > cur.length && normT(c).includes(normT(cur)) && !/[(;]/.test(current)) return formatAuthors(c);
   return null;
 }
 // Free step: Google Books / Open Library fill year, ISBN, publisher and cover without any AI cost.
 async function catalogMatch(b) {
   if (b.isbn) return lookupIsbnCatalogs(b.isbn);
-  const hits = await searchBooks([b.title, b.author].filter(Boolean).join(' '));
-  const nt = normT(b.title), na = normT((b.author || '').split(/[ ,]+/).pop());
+  const hits = await searchBooks([b.title, naturalAuthors(b.author)].filter(Boolean).join(' '));
+  const nt = normT(b.title), na = normT(grSurname(b.author));
   return hits.find((h) => (normT(h.title).startsWith(nt.slice(0, 12)) || nt.startsWith(normT(h.title).slice(0, 12))) && (!na || normT(h.author).includes(na))) || null;
 }
 async function enrichBook(b) {
@@ -268,7 +372,7 @@ async function enrichBook(b) {
       if (Object.keys(up0).length) { const { error } = await sb.from('books').update(up0).eq('id', b.id); if (!error) Object.assign(b, up0); }
     }
   } catch (e) {}
-  const { data, error } = await sb.functions.invoke('enrich-book', { body: { title: b.title, author: b.author, isbn: b.isbn, year: b.year } });
+  const { data, error } = await sb.functions.invoke('enrich-book', { body: { title: b.title, author: naturalAuthors(b.author), isbn: b.isbn, year: b.year } });
   let code = null;
   if (error) { try { code = (await error.context.json()).error; } catch (e) {} code = code || 'failed'; }
   const r = data || {};
@@ -345,7 +449,7 @@ async function tagMany(books) {
   for (let i = 0; i < todo.length && !stop; i += 25) {
     const batch = todo.slice(i, i + 25);
     bar.innerHTML = `<div class="spin"></div>Přiřazuji žánry… ${done}/${todo.length}`;
-    const { data, error } = await sb.functions.invoke('tag-books', { body: { books: batch.map((b) => ({ id: b.id, title: b.title, author: b.author, original_title: b.original_title, description: b.description })) } });
+    const { data, error } = await sb.functions.invoke('tag-books', { body: { books: batch.map((b) => ({ id: b.id, title: b.title, author: naturalAuthors(b.author), original_title: b.original_title, description: b.description })) } });
     if (error) { let c = ''; try { c = (await error.context.json()).error; } catch (e) {} stop = c || 'failed'; break; }
     const now = new Date().toISOString();
     await Promise.all(batch.map(async (b) => {
@@ -691,6 +795,8 @@ const filtersFor = (audio) => [['all', 'Vše'], ['read', audio ? 'Poslechnuto' :
 const SORTS = [['added', 'Nejnovější'], ['title', 'Název A–Z'], ['author', 'Autor A–Z']];
 // Surname of the FIRST author, ignoring notes in brackets, co-authors, translators and "& kol.".
 function surnameOf(a) {
+  const m = (firstAuthor(a) || '').match(/^([^,()]+),\s*[^,]+$/);
+  if (m) return m[1].trim();
   let first = (a || '').replace(/\([^)]*\)?/g, ' ').split(/\s*(?:[,;/&]|\s(?:and|a|und|et)\s)\s*/i)[0] || '';
   const words = first.replace(/[.\s]+$/, '').trim().split(/\s+/).filter((w) => /[\p{L}\d]/u.test(w) && !/^(kol|ed|editor)\.?$/i.test(w));
   return (words.pop() || '').replace(/^[^\p{L}\d]+|[^\p{L}\d]+$/gu, '');
@@ -703,10 +809,14 @@ function sortBooks(list, sort) {
   else l.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
   return l;
 }
+// Every word must be found somewhere – order does not matter ("Fredrik Backman" finds "Backman, Fredrik").
+// Czech -ová forms match both ways (Christie ↔ Christieová) and a first name matches an initial (Erle ↔ E.).
 const matchQ = (b, q) => {
   if (!q) return true;
   const hay = normT([b.title, b.author, b.original_title, b.isbn, b.loan_person, b.narrator, b.audio_source, LANG_NAME[b.language], ...(b.tags || [])].join(' '));
-  return q.split(/\s+/).filter(Boolean).every((w) => hay.includes(normT(w)));
+  const words = q.split(/[\s,;]+/).map(normT).filter(Boolean);
+  const initials = words.length > 1 ? (b.author || '').split(/[^\p{L}]+/u).filter((t) => t.length === 1).map(normT) : [];
+  return words.every((w) => hay.includes(w) || (w.length > 4 && /ova$/.test(w) && hay.includes(w.slice(0, -3))) || initials.includes(w[0]));
 };
 function applyUI(books, key) {
   const u = UI[key];
@@ -1358,6 +1468,7 @@ function bindCoverPick(box, onFile) {
 function openEditor(data, isNew = false, photoFile = null) {
   const d = { list: S.defaultList || 'library', format: S.defaultFormat || 'book', status: 'unread', rating: null, note: '', loan_type: null, loan_person: '', narrator: '', audio_source: '', ...data };
   if (!d.format) d.format = 'book';
+  if (isNew && d.author) d.author = formatAuthors(d.author); // catalogue gives "Jméno Příjmení"
   if (!d.language) d.language = guessLang(d.title);
   let fp = d.finished_precision || 'day';
   d.tags = [...(data.tags || [])];
@@ -1366,7 +1477,7 @@ function openEditor(data, isNew = false, photoFile = null) {
     <form id="bf" novalidate>
       <div class="detail"><div id="cv" style="width:80px;flex-shrink:0"><button type="button" class="cover-btn" id="cvb" aria-label="Změnit obálku">${coverHtml(d)}<span class="cam-badge">${I.camera}</span></button></div>
         <div style="flex:1;min-width:0"><label class="f" style="margin-top:0" for="bt">Název</label><input class="inp" id="bt" value="${esc(d.title || '')}" maxlength="300">
-        <label class="f" for="ba">Autor</label><input class="inp" id="ba" value="${esc(d.author || '')}" maxlength="300"></div></div>
+        <label class="f" for="ba">Autor</label><input class="inp" id="ba" value="${esc(d.author || '')}" maxlength="300" placeholder="Příjmení, Jméno"></div></div>
       ${coverPickHtml('ecp', 'Obálka z tvé fotky:')}
       <label class="f">Kam</label><div class="seg" id="sl">${['library', 'wishlist'].map((k) => `<button type="button" data-k="${k}" class="${d.list === k ? 'on' : ''}">${k === 'library' ? 'Knihovna' : 'Wishlist'}</button>`).join('')}</div>
       <div id="libonly" class="libonly" ${d.list === 'wishlist' ? 'hidden' : ''}>
@@ -1497,7 +1608,7 @@ function openEditor(data, isNew = false, photoFile = null) {
     if (newCover) { const u = await uploadCover(newCover); if (u) { coverOwn = cover_url; cover_url = u; } else toast('Obálku se nepodařilo nahrát.'); }
     else if (!cover_url && photoFile) cover_url = await uploadCover(photoFile);
     const row = {
-      title, author: el.querySelector('#ba').value.trim() || null, isbn: isbn || null, year: yearS ? +yearS : null,
+      title, author: tidyTypedAuthor(el.querySelector('#ba').value), isbn: isbn || null, year: yearS ? +yearS : null,
       list: d.list, status: d.list === 'wishlist' ? 'unread' : d.status, rating: d.list === 'wishlist' ? null : d.rating,
       note: el.querySelector('#bn').value.trim() || null, cover_url,
       ...(d.descEditing ? { description: el.querySelector('#bds').value.trim() || null } : {}),
@@ -1568,7 +1679,7 @@ function loadingSheet(text) {
 const DEEP_MSG = 'V katalozích nic. Hledám důkladně na internetu, i v českých databázích (asi 10 s)…';
 function resultRows(items) {
   return `<div class="list results">${items.map((b, i) => `<div class="li" data-i="${i}">${coverHtml(b)}<div class="grow"><b>${esc(b.title)}</b>
-    <span>${esc([b.author, b.year, b.publisher, LANG_NAME[b.language]].filter(Boolean).join(' · '))}</span></div></div>`).join('')}</div>`;
+    <span>${esc([formatAuthors(b.author), b.year, b.publisher, LANG_NAME[b.language]].filter(Boolean).join(' · '))}</span></div></div>`).join('')}</div>`;
 }
 async function handleIsbn(isbn) {
   const ld = loadingSheet('Hledám knihu…');
@@ -1967,7 +2078,7 @@ function openProfileEdit() {
     if (type === 'quote') return `<label class="f" for="fv-${k}">${label}</label><textarea class="inp" id="fv-${k}" maxlength="400" rows="3" placeholder="Věta, která ti utkvěla">${esc(f[k] || '')}</textarea>
       <input class="inp" id="fv-quote_src" style="margin-top:6px" maxlength="120" placeholder="Odkud je (kniha, autor)" value="${esc(f.quote_src || '')}">`;
     const list = type === 'series' ? uniq([...S.series.map((x) => x.name), ...S.books.map((b) => b.series_name)])
-      : type === 'author' ? uniq(lib.map((b) => cleanAuthor(b.author)))
+      : type === 'author' ? uniq(lib.map((b) => firstAuthor(b.author)))
       : uniq(S.books.map((b) => b.narrator));
     return `<label class="f" for="fv-${k}">${label}</label><input class="inp" id="fv-${k}" maxlength="120" list="dl-${k}" value="${esc(f[k] || '')}" placeholder="Napiš nebo vyber"><datalist id="dl-${k}">${opts(list)}</datalist>`;
   };
@@ -2122,7 +2233,7 @@ function viewYear() {
   const best = [...rated].sort((a, b) => b.rating - a.rating || (b.finished_at || '').localeCompare(a.finished_at || ''))[0];
   const top = (arr) => Object.entries(arr.reduce((m, k) => ((m[k] = (m[k] || 0) + 1), m), {})).sort((a, b) => b[1] - a[1]).slice(0, 5);
   const genres = top(books.flatMap((b) => (b.tags || []).filter((t) => t !== 'Román')));
-  const authors = top(books.map((b) => cleanAuthor(b.author)).filter(Boolean));
+  const authors = top(books.map((b) => firstAuthor(b.author)).filter(Boolean));
   const fmts = top(books.map((b) => fmtOne(b.format || 'book')));
   const langs = top(books.map((b) => LANG_NAME[b.language || 'cs'] || b.language));
   const missList = S.books.filter((b) => b.list === 'library' && b.status === 'read' && !b.finished_at && b.finished_precision !== 'unknown'), missing = missList.length;
@@ -2144,7 +2255,7 @@ function viewYear() {
     <div class="stats">
       <div><b>${books.length}</b><span>dočteno</span></div>
       <div><b>${avg || '–'}</b><span>průměrné hodnocení</span></div>
-      <div><b>${new Set(books.map((b) => cleanAuthor(b.author))).size}</b><span>autorů</span></div>
+      <div><b>${new Set(books.map((b) => firstAuthor(b.author))).size}</b><span>autorů</span></div>
     </div>
     ${best ? `<h3 class="st-h">Nejlepší kniha roku</h3><div class="list">${bookRow(best)}</div>` : ''}
     ${statRow('Nejčastější žánry', genres)}${statRow('Nejčastější autoři', authors)}${statRow('Formáty', fmts)}${statRow('Jazyky', langs)}
@@ -2348,7 +2459,7 @@ function openPick() {
     if (pf) pf.onclick = async () => {
       PICK.ai[a.id] = 'loading'; draw();
       const owned = [...new Set(S.books.flatMap((b) => [b.title, b.original_title]).filter(Boolean))];
-      const { data, error } = await sb.functions.invoke('similar-books', { body: { anchor: { title: a.title, author: a.author, original_title: a.original_title, tags: a.tags, description: a.description }, owned, lang: a.language || 'cs' } });
+      const { data, error } = await sb.functions.invoke('similar-books', { body: { anchor: { title: a.title, author: naturalAuthors(a.author), original_title: a.original_title, tags: a.tags, description: a.description }, owned, lang: a.language || 'cs' } });
       if (error) {
         let code = ''; try { code = (await error.context.json()).error; } catch (e) {}
         delete PICK.ai[a.id]; toast(code === 'limit' || code === 'no_key' ? deepErrorText(code) : 'Doporučení se nepovedlo. Zkus to znovu.');
@@ -2390,7 +2501,7 @@ async function findSeries(books) {
   for (let i = 0; i < todo.length && !stop; i += 25) {
     const batch = todo.slice(i, i + 25);
     bar.innerHTML = `<div class="spin"></div>Hledám série… ${done}/${todo.length}`;
-    const { data, error } = await sb.functions.invoke('series-books', { body: { known: [...known], books: batch.map((b) => ({ id: b.id, title: b.title, author: b.author, original_title: b.original_title, language: b.language })) } });
+    const { data, error } = await sb.functions.invoke('series-books', { body: { known: [...known], books: batch.map((b) => ({ id: b.id, title: b.title, author: naturalAuthors(b.author), original_title: b.original_title, language: b.language })) } });
     if (error) { let c = ''; try { c = (await error.context.json()).error; } catch (e) {} stop = c || 'failed'; break; }
     // merge series catalogue
     for (const [name, parts] of Object.entries(data.series || {})) {
@@ -2580,6 +2691,7 @@ async function boot() {
   render();
   if (S.recovery) { S.recovery = false; openPassword(true); }
   setTimeout(backfillCovers, 1500);
+  setTimeout(normalizeAuthors, 800);
 }
 // Once a day, quietly try free catalogues for books that still have no cover.
 async function backfillCovers() {
