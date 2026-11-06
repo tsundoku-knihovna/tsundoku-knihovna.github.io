@@ -856,7 +856,11 @@ function applyUI(books, key) {
     return matchQ(b, u.q);
   }), prefs.sort);
   // Wishlist: "Nejvíc chci" first (sort is stable, so the chosen order stays within both groups).
-  if (key === 'friend' && S.friendTab === 'read' && prefs.sort === 'added') res.sort((a, b) => (b.finished_precision === 'unknown' ? '' : b.finished_at || '').localeCompare(a.finished_precision === 'unknown' ? '' : a.finished_at || ''));
+  // Read books, sorted "Nejnovější": the most recently finished first (exact date, then year only, then unknown).
+  if (prefs.sort === 'added' && (u.filter === 'read' || (key === 'friend' && S.friendTab === 'read'))) {
+    const fk = (b) => (b.finished_precision === 'unknown' || !b.finished_at ? '' : b.finished_precision === 'year' ? b.finished_at.slice(0, 4) + '-00-00' : b.finished_at);
+    res.sort((a, b) => fk(b).localeCompare(fk(a)) || (b.created_at || '').localeCompare(a.created_at || ''));
+  }
   if (key === 'wishlist' || (key === 'friend' && S.friendTab === 'wishlist')) res.sort((a, b) => (b.wish_top ? 1 : 0) - (a.wish_top ? 1 : 0));
   return res;
 }
