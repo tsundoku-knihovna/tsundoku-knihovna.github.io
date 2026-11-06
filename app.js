@@ -3,9 +3,15 @@ const SUPABASE_URL = 'https://ukwoxnidopkcpcimhcrc.supabase.co';
 const GBOOKS_KEY = 'AIzaSyBMw_pc99KNGulZW7m3Yg-LLSSWTeMd5yE';
 const SUPABASE_KEY = 'sb_publishable_AimfClf0MBCRxMpgUeJD8w_RCiLqG1v';
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-// Every author saved to the books table goes through formatAuthors() ("Příjmení, Jméno; …").
+// Every author saved to the books table goes through formatAuthors() ("Příjmení, Jméno; …"), titles through formatTitle().
 {
-  const fixRow = (r) => (r && typeof r === 'object' && typeof r.author === 'string' ? { ...r, author: formatAuthors(r.author) } : r);
+  const fixRow = (r) => {
+    if (!r || typeof r !== 'object') return r;
+    const o = { ...r };
+    if (typeof o.author === 'string') o.author = formatAuthors(o.author);
+    if (typeof o.title === 'string') o.title = formatTitle(o.title, o.author);
+    return o;
+  };
   const fromOrig = sb.from.bind(sb);
   sb.from = (table) => {
     const q = fromOrig(table);
@@ -143,14 +149,14 @@ async function loadProfile() {
   const { data } = await sb.from('profiles').select('*').eq('id', S.session.user.id).maybeSingle();
   S.profile = data;
 }
-// Books saved before the "Příjmení, Jméno" format: convert them once (each user only her own books).
+// Books saved before the "Příjmení, Jméno" format (or with titles in capitals): convert them once (each user only her own books).
 async function normalizeAuthors() {
-  const todo = S.books.filter((b) => b.author && formatAuthors(b.author) !== b.author);
+  const todo = S.books.filter((b) => (b.author && formatAuthors(b.author) !== b.author) || (b.title && formatTitle(b.title, b.author) !== b.title));
   for (let i = 0; i < todo.length; i += 10) {
     await Promise.all(todo.slice(i, i + 10).map(async (b) => {
-      const author = formatAuthors(b.author);
-      const { error } = await sb.from('books').update({ author }).eq('id', b.id);
-      if (!error) b.author = author;
+      const author = b.author ? formatAuthors(b.author) : b.author, title = formatTitle(b.title, author);
+      const { error } = await sb.from('books').update({ author, title }).eq('id', b.id);
+      if (!error) Object.assign(b, { author, title });
     }));
   }
   if (todo.length) render();
@@ -337,6 +343,19 @@ function tidyTypedAuthor(s) {
   if (!s) return null;
   if (!s.includes(';') && !s.includes(',')) return formatAuthors(s);
   return fixCase(s).split(/\s*;\s*/).filter(Boolean).map((p) => (p.includes(',') || ETAL.test(p) ? p.replace(/\s*,\s*/, ', ') : invertPerson(p))).join('; ');
+}
+// Titles: "KMOTR" → "Kmotr", "případ vyjícího psa" → "Případ vyjícího psa". Only all-caps or all-lowercase
+// titles are touched; names from the author field and Roman numerals keep their capitals.
+function formatTitle(t, author) {
+  if (typeof t !== 'string') return t;
+  const letters = t.replace(/[^\p{L}]/gu, '');
+  if (letters.length < 2) return t;
+  const caps = letters === letters.toUpperCase() && /\p{Lu}.*\p{Lu}/u.test(letters), lower = letters === letters.toLowerCase();
+  if (!caps && !lower) return t;
+  const names = new Set(naturalAuthors(author || '').split(/[^\p{L}]+/u).filter((w) => w.length > 1).map((w) => w.toLowerCase()));
+  let out = caps ? t.split(/(\s+)/).map((w) => (/^[IVX]+\.?$/.test(w) && w !== 'I' ? w : w.toLowerCase())).join('') : t;
+  out = out.replace(/\p{L}+/gu, (w) => (names.has(w.toLowerCase()) ? w.charAt(0).toUpperCase() + w.slice(1) : w));
+  return out.replace(/^([^\p{L}\d]*)(\p{L})/u, (m, a, c) => a + c.toUpperCase()).replace(/(\p{L}[.!?]\s+)(\p{L})/gu, (m, a, c) => a + c.toUpperCase());
 }
 const firstAuthor = (a) => ((a || '').split(/\s*;\s*/)[0] || '').trim() || null;
 function cleanAuthor(a) {
